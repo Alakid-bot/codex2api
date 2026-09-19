@@ -699,8 +699,12 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		}
 
 		// ==================== 请求头（伪装 Codex CLI） ====================
+		// Outbound turn-state order: Guard (caller) → auto template Apply →
+		// account custom headers → manual credential inject last (ops override).
+		// 292 模板替换兜底：即使调用方漏了 Apply，这里仍按 body.model 改写一次。
+		ApplyCodexTurnStateTemplate(ctx, headers, account, strings.TrimSpace(gjson.GetBytes(requestBody, "model").String()))
 		applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers)
-		// 凭据级 turn state 注入在账号自定义头之后落定：自定义头不该顶掉它。
+		// 凭据级 turn state 注入在账号自定义头之后落定：自定义头与自动模板都不该顶掉它。
 		applyCodexTurnStateInjectionHeader(ctx, req.Header)
 		// Content-Encoding 在通用头装配之后设置：真实客户端也是在编码完成时才补这个头
 		// （codex-rs/http-client/src/request.rs prepare_encoded_json），且账号自定义头
@@ -1024,6 +1028,8 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 		return nil, ErrInternalError("创建请求失败", err)
 	}
 
+	// compact: same order — template Apply then manual credential inject last.
+	ApplyCodexTurnStateTemplate(ctx, headers, account, strings.TrimSpace(gjson.GetBytes(requestBody, "model").String()))
 	applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers)
 	applyCodexTurnStateInjectionHeader(ctx, req.Header)
 	// routing hint 由网关按最终出站 body 合成，须在账号自定义头之后设置。

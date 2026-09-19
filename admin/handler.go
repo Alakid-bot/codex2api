@@ -9247,29 +9247,29 @@ type settingsResponse struct {
 	GrokOAuthClientIDEffective   string `json:"grok_oauth_client_id_effective"`
 	// Antigravity OAuth client 配置视图（嵌入展平）。
 	antigravityOAuthSettingsView
-	MaxRetries                         int                              `json:"max_retries"`
-	MaxRateLimitRetries                int                              `json:"max_rate_limit_retries"`
-	RetryIntervalMS                    int                              `json:"retry_interval_ms"`
-	TransportRetryPolicy               string                           `json:"transport_retry_policy"`
-	ContinuousRetryEnabled             bool                             `json:"continuous_retry_enabled"`
-	ContinuousRetryCatchAll            bool                             `json:"continuous_retry_catch_all"`
-	ContinuousRetryCategories          []string                         `json:"continuous_retry_categories"`
-	ContinuousRetryStatusCodes         []int                            `json:"continuous_retry_status_codes"`
-	ContinuousRetryErrorCodes          []string                         `json:"continuous_retry_error_codes"`
-	ContinuousRetryMaxDurationSeconds  int                              `json:"continuous_retry_max_duration_seconds"`
-	CodexFingerprintDefaultMode        string                           `json:"codex_fingerprint_default_mode"`
-	AllowRemoteMigration               bool                             `json:"allow_remote_migration"`
-	DatabaseDriver                     string                           `json:"database_driver"`
-	DatabaseLabel                      string                           `json:"database_label"`
-	CacheDriver                        string                           `json:"cache_driver"`
-	CacheLabel                         string                           `json:"cache_label"`
-	ExpiredCleaned                     int                              `json:"expired_cleaned,omitempty"`
-	ModelMapping                       string                           `json:"model_mapping"`
-	CodexModelMapping                  string                           `json:"codex_model_mapping"`
-	PayloadRules                       string                           `json:"payload_rules"`
-	ReasoningEffortModels              string                           `json:"reasoning_effort_models"`
-	ResinURL                           string                           `json:"resin_url"`
-	ResinPlatformName                  string                           `json:"resin_platform_name"`
+	MaxRetries                        int      `json:"max_retries"`
+	MaxRateLimitRetries               int      `json:"max_rate_limit_retries"`
+	RetryIntervalMS                   int      `json:"retry_interval_ms"`
+	TransportRetryPolicy              string   `json:"transport_retry_policy"`
+	ContinuousRetryEnabled            bool     `json:"continuous_retry_enabled"`
+	ContinuousRetryCatchAll           bool     `json:"continuous_retry_catch_all"`
+	ContinuousRetryCategories         []string `json:"continuous_retry_categories"`
+	ContinuousRetryStatusCodes        []int    `json:"continuous_retry_status_codes"`
+	ContinuousRetryErrorCodes         []string `json:"continuous_retry_error_codes"`
+	ContinuousRetryMaxDurationSeconds int      `json:"continuous_retry_max_duration_seconds"`
+	CodexFingerprintDefaultMode       string   `json:"codex_fingerprint_default_mode"`
+	AllowRemoteMigration              bool     `json:"allow_remote_migration"`
+	DatabaseDriver                    string   `json:"database_driver"`
+	DatabaseLabel                     string   `json:"database_label"`
+	CacheDriver                       string   `json:"cache_driver"`
+	CacheLabel                        string   `json:"cache_label"`
+	ExpiredCleaned                    int      `json:"expired_cleaned,omitempty"`
+	ModelMapping                      string   `json:"model_mapping"`
+	CodexModelMapping                 string   `json:"codex_model_mapping"`
+	PayloadRules                      string   `json:"payload_rules"`
+	ReasoningEffortModels             string   `json:"reasoning_effort_models"`
+	ResinURL                          string   `json:"resin_url"`
+	ResinPlatformName                 string   `json:"resin_platform_name"`
 	// CodexEgress 是后端权威的"Codex 渠道当前由谁承担出站"摘要:Resin 启用时代理池与
 	// proxy_url 对 Codex 不生效,界面据此标注,避免三套配置并存看不出谁在生效(issue #679)。
 	CodexEgress                        proxy.CodexEgressSummary         `json:"codex_egress"`
@@ -9296,6 +9296,8 @@ type settingsResponse struct {
 	CodexMinCLIVersion                 string                           `json:"codex_min_cli_version"`
 	CodexUserAgentConfig               string                           `json:"codex_user_agent_config"`
 	CodexTelemetryEnabled              bool                             `json:"codex_telemetry_enabled"`
+	CodexTurnStateTemplateCacheEnabled bool                             `json:"codex_turn_state_template_cache_enabled"`
+	CodexTurnStateAccountMode          string                           `json:"codex_turn_state_account_mode"`
 	CodexTelemetryTimingDebug          bool                             `json:"codex_telemetry_timing_debug"`
 	UsageLogMode                       string                           `json:"usage_log_mode"`
 	UsageLogBatchSize                  int                              `json:"usage_log_batch_size"`
@@ -9465,6 +9467,8 @@ type updateSettingsReq struct {
 	CodexMinCLIVersion                  *string                          `json:"codex_min_cli_version"`
 	CodexUserAgentConfig                *string                          `json:"codex_user_agent_config"`
 	CodexTelemetryEnabled               *bool                            `json:"codex_telemetry_enabled"`
+	CodexTurnStateTemplateCacheEnabled  *bool                            `json:"codex_turn_state_template_cache_enabled"`
+	CodexTurnStateAccountMode           *string                          `json:"codex_turn_state_account_mode"`
 	CodexTelemetryTimingDebug           *bool                            `json:"codex_telemetry_timing_debug"`
 	UsageLogMode                        *string                          `json:"usage_log_mode"`
 	UsageLogBatchSize                   *int                             `json:"usage_log_batch_size"`
@@ -10302,6 +10306,8 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexMinCLIVersion:                  runtimeCfg.CodexMinCLIVersion,
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
+		CodexTurnStateTemplateCacheEnabled:  runtimeCfg.CodexTurnStateTemplateCache,
+		CodexTurnStateAccountMode:           runtimeCfg.CodexTurnStateAccountMode,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
 		UsageLogMode:                        h.db.GetUsageLogMode(),
 		UsageLogBatchSize:                   h.db.GetUsageLogBatchSize(),
@@ -10615,6 +10621,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	persistedAutoResetCreditsEnabled := false
 	persistedAutoResetCreditsBeforeExpiryMin := 60
 	persistedAutoActivate5hWindowEnabled := false
+	persistedCodexTurnStateTemplateCache := false
+	persistedCodexTurnStateAccountMode := proxy.CodexTurnStateAccountModeAuto
 	codexImagesMainModel := ""
 	persistedUTLSShutdownTimeoutMinutes := database.NormalizeUTLSShutdownTimeoutMinutes(0)
 	modelsListReadMaxBytes := database.DefaultModelsListReadMaxBytes
@@ -10639,6 +10647,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		persistedAutoResetCreditsEnabled = existingSettings.AutoResetCreditsEnabled
 		persistedAutoResetCreditsBeforeExpiryMin = existingSettings.AutoResetCreditsBeforeExpiryMin
 		persistedAutoActivate5hWindowEnabled = existingSettings.AutoActivate5hWindowEnabled
+		persistedCodexTurnStateTemplateCache = existingSettings.CodexTurnStateTemplateCacheEnabled
+		persistedCodexTurnStateAccountMode = proxy.NormalizeCodexTurnStateAccountMode(existingSettings.CodexTurnStateAccountMode)
 		codexImagesMainModel = existingSettings.CodexImagesMainModel
 		persistedUTLSShutdownTimeoutMinutes = database.NormalizeUTLSShutdownTimeoutMinutes(existingSettings.UTLSShutdownTimeoutMinutes)
 		modelsListReadMaxBytes = database.NormalizeModelsListReadMaxBytes(existingSettings.ModelsListReadMaxBytes)
@@ -10713,11 +10723,15 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	previousAutoResetCreditsEnabled := runtimeCfg.AutoResetCreditsEnabled
 	previousAutoResetCreditsBeforeExpiryMin := runtimeCfg.AutoResetCreditsBeforeExpiryMin
 	previousAutoActivate5hWindowEnabled := runtimeCfg.AutoActivate5hWindowEnabled
+	previousCodexTurnStateTemplateCache := runtimeCfg.CodexTurnStateTemplateCache
+	previousCodexTurnStateAccountMode := runtimeCfg.CodexTurnStateAccountMode
 	// 数据库是多实例下的权威来源；用持久值作为本次 partial update 的基线，
 	// 避免旧实例保存无关字段时把自动消费配置回滚成自己的陈旧快照。
 	runtimeCfg.AutoResetCreditsEnabled = persistedAutoResetCreditsEnabled
 	runtimeCfg.AutoResetCreditsBeforeExpiryMin = persistedAutoResetCreditsBeforeExpiryMin
 	runtimeCfg.AutoActivate5hWindowEnabled = persistedAutoActivate5hWindowEnabled
+	runtimeCfg.CodexTurnStateTemplateCache = persistedCodexTurnStateTemplateCache
+	runtimeCfg.CodexTurnStateAccountMode = persistedCodexTurnStateAccountMode
 	runtimeCfg.UTLSShutdownTimeoutMin = persistedUTLSShutdownTimeoutMinutes
 	runtimeCfg.ModelsListReadMaxBytes = modelsListReadMaxBytes
 	continuousRetryPolicy := h.store.GetContinuousRetryPolicy()
@@ -10734,6 +10748,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	autoResetCreditsChanged := (req.AutoResetCreditsEnabled != nil && *req.AutoResetCreditsEnabled != persistedAutoResetCreditsEnabled) ||
 		(req.AutoResetCreditsBeforeExpiryMin != nil && *req.AutoResetCreditsBeforeExpiryMin != persistedAutoResetCreditsBeforeExpiryMin)
 	autoActivate5hChanged := req.AutoActivate5hWindowEnabled != nil && *req.AutoActivate5hWindowEnabled != persistedAutoActivate5hWindowEnabled
+	turnStateTemplateSettingsChanged := (req.CodexTurnStateTemplateCacheEnabled != nil && *req.CodexTurnStateTemplateCacheEnabled != persistedCodexTurnStateTemplateCache) ||
+		(req.CodexTurnStateAccountMode != nil && proxy.NormalizeCodexTurnStateAccountMode(*req.CodexTurnStateAccountMode) != persistedCodexTurnStateAccountMode)
 	usageLogMode := h.db.GetUsageLogMode()
 	usageLogBatchSize := h.db.GetUsageLogBatchSize()
 	usageLogFlushIntervalSeconds := h.db.GetUsageLogFlushIntervalSeconds()
@@ -11373,6 +11389,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.CodexTelemetryEnabled = *req.CodexTelemetryEnabled
 		log.Printf("设置已更新: codex_telemetry_enabled = %t", runtimeCfg.CodexTelemetryEnabled)
 	}
+	if req.CodexTurnStateTemplateCacheEnabled != nil {
+		runtimeCfg.CodexTurnStateTemplateCache = *req.CodexTurnStateTemplateCacheEnabled
+		log.Printf("设置已更新: codex_turn_state_template_cache_enabled = %t", runtimeCfg.CodexTurnStateTemplateCache)
+	}
+	if req.CodexTurnStateAccountMode != nil {
+		runtimeCfg.CodexTurnStateAccountMode = proxy.NormalizeCodexTurnStateAccountMode(*req.CodexTurnStateAccountMode)
+		log.Printf("设置已更新: codex_turn_state_account_mode = %s", runtimeCfg.CodexTurnStateAccountMode)
+	}
 	if req.CodexTelemetryTimingDebug != nil {
 		runtimeCfg.CodexTelemetryTimingDebug = *req.CodexTelemetryTimingDebug
 		log.Printf("设置已更新: codex_telemetry_timing_debug = %t", runtimeCfg.CodexTelemetryTimingDebug)
@@ -11471,6 +11495,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 	if autoActivate5hChanged {
 		effectiveRuntimeCfg.AutoActivate5hWindowEnabled = previousAutoActivate5hWindowEnabled
+	}
+	if turnStateTemplateSettingsChanged {
+		// Hold back until UpdateSystemSettings succeeds (same pattern as auto-reset).
+		effectiveRuntimeCfg.CodexTurnStateTemplateCache = previousCodexTurnStateTemplateCache
+		effectiveRuntimeCfg.CodexTurnStateAccountMode = previousCodexTurnStateAccountMode
 	}
 	effectiveRuntimeCfg = proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 		// CodexSyncedCLIVersion 由后台同步任务独立维护；管理员保存其他设置时
@@ -11794,6 +11823,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexMinCLIVersion:                  runtimeCfg.CodexMinCLIVersion,
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
+		CodexTurnStateTemplateCacheEnabled:  runtimeCfg.CodexTurnStateTemplateCache,
+		CodexTurnStateAccountMode:           runtimeCfg.CodexTurnStateAccountMode,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,
@@ -11855,6 +11886,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		if autoActivate5hChanged {
 			runtimeCfg = effectiveRuntimeCfg
 			writeError(c, http.StatusInternalServerError, "保存 5h 窗口自动激活设置失败，设置未生效")
+			return
+		}
+		if turnStateTemplateSettingsChanged {
+			runtimeCfg = effectiveRuntimeCfg
+			writeError(c, http.StatusInternalServerError, "保存 turn-state 模板缓存设置失败，设置未生效")
 			return
 		}
 		if continuousRetryChanged {
@@ -11930,6 +11966,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 				return runtimeCfg
 			})
 			h.triggerAutoActivate5hScan()
+		}
+		if turnStateTemplateSettingsChanged {
+			runtimeCfg = proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
+				runtimeCfg.CodexSyncedCLIVersion = current.CodexSyncedCLIVersion
+				return runtimeCfg
+			})
 		}
 		if modelsListReadLimitChanged {
 			if updateErr := h.db.UpdateModelsListReadMaxBytes(c.Request.Context(), *req.ModelsListReadMaxBytes); updateErr != nil {
@@ -12146,6 +12188,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexMinCLIVersion:                  runtimeCfg.CodexMinCLIVersion,
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
+		CodexTurnStateTemplateCacheEnabled:  runtimeCfg.CodexTurnStateTemplateCache,
+		CodexTurnStateAccountMode:           runtimeCfg.CodexTurnStateAccountMode,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,
