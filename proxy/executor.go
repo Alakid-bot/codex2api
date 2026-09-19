@@ -699,6 +699,8 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		}
 
 		// ==================== 请求头（伪装 Codex CLI） ====================
+		// 292 模板替换兜底：即使调用方漏了 Apply，这里仍按 body.model 改写一次。
+		ApplyCodexTurnStateTemplate(headers, account, strings.TrimSpace(gjson.GetBytes(requestBody, "model").String()))
 		applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers)
 		// 凭据级 turn state 注入在账号自定义头之后落定：自定义头不该顶掉它。
 		applyCodexTurnStateInjectionHeader(ctx, req.Header)
@@ -1024,6 +1026,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 		return nil, ErrInternalError("创建请求失败", err)
 	}
 
+	ApplyCodexTurnStateTemplate(headers, account, strings.TrimSpace(gjson.GetBytes(requestBody, "model").String()))
 	applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers)
 	applyCodexTurnStateInjectionHeader(ctx, req.Header)
 	// routing hint 由网关按最终出站 body 合成，须在账号自定义头之后设置。

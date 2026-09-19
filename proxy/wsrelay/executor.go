@@ -366,6 +366,8 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 			headers.Set(name, value)
 		}
 	}
+	// 292 模板替换/注入：在透传 turn-state 之后、指纹收敛之前。
+	proxy.ApplyCodexTurnStateTemplate(headers, account, strings.TrimSpace(gjson.GetBytes(wsBody, "model").String()))
 	// 指纹收敛：在透传之后覆盖客户端原值，在账号自定义头之前保留运维覆盖优先级。
 	// 握手头是逐连接冻结的，复用连接沿用建连时的取值；收敛值按账号恒定，正好与
 	// 这一语义相容。off 档为空操作。

@@ -4399,7 +4399,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			// account-bound turn-state token from an attempt that is not yet known
 			// to be successful.
 			if (!isStream || !continuousRetryBuffersAttempts(continuousRetryPolicy)) && !continuousRetryDeadlineActive(c.Request.Context()) {
-				relayCodexTurnStateResponseHeader(c, affinityKey, account, resp.Header)
+				relayCodexTurnStateResponseHeader(c, affinityKey, account, attemptEffectiveModel, resp.Header)
 			}
 			if isGrokNativeRouteResponse(resp) {
 				downstreamFlusher, _ := c.Writer.(http.Flusher)
@@ -4430,7 +4430,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						return
 					}
 					copyGrokNativeResponseHeaders(c, resp.Header)
-					if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, resp.Header); commitErr != nil {
+					if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, attemptEffectiveModel, resp.Header); commitErr != nil {
 						if isContinuousRetryLocalFailure(commitErr) {
 							outcome = overlayContinuousRetryLocalFailure(outcome, commitErr)
 						} else {
@@ -4768,7 +4768,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					return
 				}
 				copyGrokNativeResponseHeaders(c, resp.Header)
-				if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, resp.Header); commitErr != nil {
+				if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, attemptEffectiveModel, resp.Header); commitErr != nil {
 					if isContinuousRetryLocalFailure(commitErr) {
 						outcome = overlayContinuousRetryLocalFailure(outcome, commitErr)
 					} else {
@@ -4929,6 +4929,8 @@ func (h *Handler) Responses(c *gin.Context) {
 		serviceTier = EffectiveRequestedServiceTier(upstreamBody, attemptEffectiveModel, downstreamHeaders, attemptIdentity)
 		// 换号后剥离旧账号铸造的 turn-state 回带,防止跨账号矛盾信号打到上游。
 		guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
+		// 292 模板替换/注入：必须在 guard 之后、出站 Execute 之前。
+		ApplyCodexTurnStateTemplate(downstreamHeaders, account, attemptEffectiveModel)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 		})
@@ -5133,7 +5135,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		}
 
 		if !isStream || !continuousRetryBuffersAttempts(continuousRetryPolicy) {
-			relayCodexTurnStateResponseHeader(c, affinityKey, account, resp.Header)
+			relayCodexTurnStateResponseHeader(c, affinityKey, account, attemptEffectiveModel, resp.Header)
 		}
 		SyncCodexUsageState(h.store, account, resp)
 		// 成功！透传响应并跟踪 TTFT / usage
@@ -5627,7 +5629,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				h.store.Release(account)
 				return
 			}
-			if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, resp.Header); commitErr != nil {
+			if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, attemptEffectiveModel, resp.Header); commitErr != nil {
 				if isContinuousRetryLocalFailure(commitErr) {
 					outcome = overlayContinuousRetryLocalFailure(outcome, commitErr)
 				} else {
@@ -6279,6 +6281,8 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		upstreamEndpointLabel := "/v1/responses/compact"
 		var resp *http.Response
 		var reqErr error
+		guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
+		ApplyCodexTurnStateTemplate(downstreamHeaders, account, attemptEffectiveModel)
 		if compactViaResponses {
 			upstreamEndpointLabel = "/v1/responses"
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
@@ -6922,6 +6926,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if useWebsocket {
 				upstreamBody = stripResponsesImageGenerationTool(codexBody)
 			}
+			guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
+			ApplyCodexTurnStateTemplate(downstreamHeaders, account, attemptEffectiveModel)
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 			})

@@ -36,7 +36,10 @@ var (
 // 并记录铸造账号。上游没有该头时主动清除 writer 上可能残留的上一 failover
 // attempt 的值——否则换号重试后旧账号的 blob 会粘到新账号的响应上,正是本
 // 文件要防止的跨账号矛盾。(流式响应一旦提交,对 writer 头的改动是无害空操作。)
-func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, account *auth.Account, headers http.Header) {
+func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, account *auth.Account, model string, headers http.Header) {
+	// Capture whenever upstream minted a template for this account+model,
+	// independent of whether we relay the header to the client.
+	CaptureCodexTurnStateTemplate(account, model, headers)
 	if c == nil {
 		return
 	}
@@ -58,7 +61,9 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 // a later failover may use another account. If a heartbeat already committed
 // the response, no documented Responses event is equivalent to this header, so
 // the token is intentionally omitted instead of leaking stale account state.
-func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuousRetryStreamAttempt, affinityKey string, account *auth.Account, headers http.Header) error {
+func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuousRetryStreamAttempt, affinityKey string, account *auth.Account, model string, headers http.Header) error {
+	// Capture upstream mint even if local commit later fails to relay the header.
+	CaptureCodexTurnStateTemplate(account, model, headers)
 	if attempt == nil {
 		return h.commitStreamAttempt(c, attempt)
 	}
