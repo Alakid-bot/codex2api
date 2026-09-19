@@ -1633,6 +1633,19 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 	}
 	upscalePlan := imageUpscalePlanForRequest(requestModel, responsesBody)
 
+	var replay *os.File
+	if pipeline := pipelineFromContext(c.Request.Context()); pipeline != nil {
+		var err error
+		replay, err = pipeline.spool(responsesBody)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "cannot spool image request"}})
+			return
+		}
+		defer removePipelineFile(replay)
+		responsesBody = pipelineRetryMetadata(responsesBody)
+		compactPipelineIngress(c)
+	}
+
 	for attempt := 0; ; attempt++ {
 		if attempt >= maxImageAttempts && !continuousRetryActive {
 			break
@@ -1720,6 +1733,11 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		}
 
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
+			if replay != nil {
+				return executePipelineImage(c.Request.Context(), replay, gjson.GetBytes(responsesBody, "model").String(), func(body []byte) (*http.Response, error) {
+					return ExecuteRequest(c.Request.Context(), account, body, "", proxyURL, apiKey, deviceCfg, c.Request.Header.Clone(), false)
+				})
+			}
 			return ExecuteRequest(c.Request.Context(), account, responsesBody, "", proxyURL, apiKey, deviceCfg, c.Request.Header.Clone(), false)
 		})
 		durationMs := int(time.Since(start).Milliseconds())
@@ -1758,6 +1776,17 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			}
 			ErrorToGinResponse(c, reqErr)
 			return
+		}
+
+		if pipeline := pipelineFromContext(c.Request.Context()); pipeline != nil {
+			file, err := pipeline.collectResponse(c.Request.Context(), resp.Body)
+			if err != nil {
+				h.store.Release(account)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "image response spool failed; upstream result may be unknown: " + err.Error()}})
+				return
+			}
+			defer removePipelineFile(file)
+			resp.Body = &pipelineResponseReader{File: file, err: pipeline.responseReadError}
 		}
 
 		if resp.StatusCode != http.StatusOK {
@@ -2148,6 +2177,9 @@ func buildImageErrorUsageLog(account *auth.Account, inboundEndpoint, logModel, l
 // catch-all. Explicitly selected failures bypass the ordinary image-attempt
 // cap; unselected legacy retry budgets keep honoring it.
 func shouldRetryImageStreamError(err error, generalRetries *int, maxGeneralRetries int, attempt int, maxAttempts int, policies ...database.ContinuousRetryPolicy) bool {
+	if isPipelineOutputError(err) {
+		return false
+	}
 	if err == nil || generalRetries == nil {
 		return false
 	}
@@ -2330,6 +2362,9 @@ func applyImageUpscalePlan(ctx context.Context, plan imageUpscalePlan, results [
 
 // applyImageUpscalePlanWithKeepalive 在图片超分期间保持下游连接有协议流量。
 func applyImageUpscalePlanWithKeepalive(ctx context.Context, plan imageUpscalePlan, results []imageCallResult) ([]imageCallResult, error) {
+	if p := pipelineFromContext(ctx); p != nil && p.Output != nil {
+		return results, nil
+	}
 	if !plan.enabled() {
 		return results, nil
 	}
@@ -2715,13 +2750,13 @@ func collectImagesResponse(ctx context.Context, body io.Reader, responseFormat, 
 		}
 		switch normalizedUpstreamSSEEventType(event, data) {
 		case "response.output_item.done":
-			if image, ok := extractImageFromOutputItemDone(data, fallbackModel); ok {
+			if image, ok := extractImageFromOutputItemDone(data, fallbackModel, pipelineFromContext(ctx) != nil); ok {
 				mergeImageMeta(&image, firstMeta)
 				pendingResults = append(pendingResults, image)
 			}
 		case "response.completed":
 			gotTerminal = true
-			results, completedAt, usageRaw, completedMeta, completedUsage, err := extractImagesFromResponsesCompleted(data, fallbackModel)
+			results, completedAt, usageRaw, completedMeta, completedUsage, err := extractImagesFromResponsesCompleted(data, fallbackModel, pipelineFromContext(ctx) != nil)
 			if err != nil {
 				readErr = err
 				return false
@@ -3247,7 +3282,7 @@ func firstNonEmptyImageErrorField(values ...string) string {
 	return ""
 }
 
-func extractImagesFromResponsesCompleted(payload []byte, fallbackModel string) ([]imageCallResult, int64, []byte, imageCallResult, *UsageInfo, error) {
+func extractImagesFromResponsesCompleted(payload []byte, fallbackModel string, skipStats ...bool) ([]imageCallResult, int64, []byte, imageCallResult, *UsageInfo, error) {
 	if gjson.GetBytes(payload, "type").String() != "response.completed" {
 		return nil, 0, nil, imageCallResult{}, nil, fmt.Errorf("unexpected event type")
 	}
@@ -3283,7 +3318,9 @@ func extractImagesFromResponsesCompleted(payload []byte, fallbackModel string) (
 				Quality:       strings.TrimSpace(item.Get("quality").String()),
 				Model:         fallbackModel,
 			}
-			populateImageStats(&image)
+			if len(skipStats) == 0 || !skipStats[0] {
+				populateImageStats(&image)
+			}
 			mergeImageMeta(&image, firstMeta)
 			if len(results) == 0 {
 				firstMeta = image
@@ -3309,7 +3346,7 @@ func hasTokenUsage(usage *UsageInfo) bool {
 	return usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0)
 }
 
-func extractImageFromOutputItemDone(payload []byte, fallbackModel string) (imageCallResult, bool) {
+func extractImageFromOutputItemDone(payload []byte, fallbackModel string, skipStats ...bool) (imageCallResult, bool) {
 	if gjson.GetBytes(payload, "type").String() != "response.output_item.done" {
 		return imageCallResult{}, false
 	}
@@ -3333,7 +3370,9 @@ func extractImageFromOutputItemDone(payload []byte, fallbackModel string) (image
 		Quality:       strings.TrimSpace(item.Get("quality").String()),
 		Model:         fallbackModel,
 	}
-	populateImageStats(&image)
+	if len(skipStats) == 0 || !skipStats[0] {
+		populateImageStats(&image)
+	}
 	return image, true
 }
 
@@ -3387,6 +3426,9 @@ func mergeImageMeta(target *imageCallResult, source imageCallResult) {
 type imageURLBuilder func(ctx context.Context, image imageCallResult, idx int) (string, bool)
 
 func buildImagesAPIResponse(ctx context.Context, results []imageCallResult, createdAt int64, usageRaw []byte, firstMeta imageCallResult, responseFormat string, urlFor imageURLBuilder) ([]byte, error) {
+	if p := pipelineFromContext(ctx); p != nil && p.Output != nil {
+		return p.saveResults(ctx, results)
+	}
 	if createdAt <= 0 {
 		createdAt = time.Now().Unix()
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/codex2api/internal/imagestore"
+	"github.com/codex2api/proxy"
 	"github.com/google/uuid"
 )
 
@@ -130,6 +131,11 @@ func (h *Handler) cleanupImageStorage(ctx context.Context, cfg imageRetention, n
 	if err != nil {
 		return err
 	}
+	pipelineRemoved, err := proxy.CleanupImagePipelineFiles(ctx, imageAssetDir(), now.Add(-24*time.Hour))
+	if err != nil {
+		return err
+	}
+	temp += pipelineRemoved
 	log.Printf("[image-retention] completed assets_deleted=%d jobs_deleted=%d temporary_deleted=%d image_bytes_reclaimed=%d", deletedAssets, deletedJobs, temp, reclaimed)
 	return nil
 }

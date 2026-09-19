@@ -29,8 +29,9 @@ const queueInputBudget = 32 << 20
 const queueLeaseDuration = 2 * time.Minute
 
 type imageJobQueue struct {
-	intake chan struct{}
-	wg     sync.WaitGroup
+	intake   chan struct{}
+	wg       sync.WaitGroup
+	pipeline bool
 }
 
 // Opt-in deployment setting; zero preserves legacy admission semantics.
@@ -56,7 +57,17 @@ func (h *Handler) StartImageJobQueue(ctx context.Context, workers int) error {
 	if err := h.db.ExpireImageJobLeases(ctx, time.Now()); err != nil {
 		return err
 	}
-	h.imageQueue = &imageJobQueue{intake: make(chan struct{}, 2)}
+	memoryWorkers := 0
+	if raw := strings.TrimSpace(os.Getenv("IMAGE_JOB_MEMORY_WORKERS")); raw != "" {
+		var err error
+		memoryWorkers, err = strconv.Atoi(raw)
+		if err != nil || memoryWorkers < 0 || memoryWorkers > workers {
+			return fmt.Errorf("IMAGE_JOB_MEMORY_WORKERS must be 0..IMAGE_JOB_WORKERS")
+		}
+	}
+	proxy.ConfigureImagePipeline(memoryWorkers)
+	h.imageQueue = &imageJobQueue{intake: make(chan struct{}, 2), pipeline: memoryWorkers > 0}
+	log.Printf("[image-pipeline] configured inflight=%d memory_workers=%d", workers, memoryWorkers)
 	proxy.ConfigureImageExecutionLimit(workers)
 	for i := 0; i < workers; i++ {
 		h.imageQueue.wg.Add(1)
@@ -351,6 +362,10 @@ func (h *Handler) runNextQueuedImage(ctx context.Context) {
 		}
 	}
 	defer release()
+	if h.imageQueue != nil && h.imageQueue.pipeline {
+		h.runPipelinedImageJob(jobCtx, id, owner, req, key)
+		return
+	}
 	if err = loadQueueInputs(jobCtx, &req); err != nil {
 		fail(err)
 		return

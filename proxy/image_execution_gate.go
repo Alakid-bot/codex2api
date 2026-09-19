@@ -41,14 +41,30 @@ func admitDirectImageExecution(c *gin.Context) (func(), bool) {
 	if inherited, _ := c.Request.Context().Value(imageExecutionContextKey{}).(bool); inherited {
 		return func() {}, true
 	}
+	memoryGate := processImagePipeline.Load()
+	if memoryGate != nil {
+		select {
+		case memoryGate.slots <- struct{}{}:
+		default:
+			c.Header("Retry-After", "2")
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"message": "Image processing busy; use /v1/images/jobs"}})
+			return nil, false
+		}
+	}
+	releaseMemory := func() {
+		if memoryGate != nil {
+			<-memoryGate.slots
+		}
+	}
 	gate := processImageGate.Load()
 	if gate == nil {
-		return func() {}, true
+		return releaseMemory, true
 	}
 	select {
 	case gate.slots <- struct{}{}:
-		return func() { <-gate.slots }, true
+		return func() { <-gate.slots; releaseMemory() }, true
 	default:
+		releaseMemory()
 		c.Header("Retry-After", "2")
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"message": "Image workers are busy; submit /v1/images/jobs to queue the request", "type": "rate_limit_error"}})
 		return nil, false
