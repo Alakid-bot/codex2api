@@ -5130,6 +5130,7 @@
     "bindKindAll": "All types",
     "bindKindCodex": "Codex",
     "bindKindGrok": "Grok",
+    "bindKindAntigravity": "Antigravity",
     "bindKindClaude": "Claude",
     "bindSelectVisible": "Select visible",
     "bindSelectionSummary": "{{selected}} selected · showing {{shown}} / {{total}}",

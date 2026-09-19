@@ -5129,6 +5129,7 @@
     "bindKindAll": "全部类型",
     "bindKindCodex": "Codex",
     "bindKindGrok": "Grok",
+    "bindKindAntigravity": "Antigravity",
     "bindKindClaude": "Claude",
     "bindSelectVisible": "全选当前列表",
     "bindSelectionSummary": "已选 {{selected}} · 显示 {{shown}} / 共 {{total}}",

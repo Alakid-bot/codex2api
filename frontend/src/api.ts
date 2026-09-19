@@ -1611,7 +1611,7 @@ export const api = {
     request<{ message: string; deleted: number }>('/proxies/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
   cleanErrorProxies: () =>
     request<{ message: string; cleaned: number; unbound: number }>('/proxies/clean-error', { method: 'POST' }),
-  autoBalanceProxies: (data: { channel?: 'codex' | 'grok' | 'claude'; mode?: 'unbound' | 'all'; max_per_proxy?: number; proxy_ids?: number[] }) =>
+  autoBalanceProxies: (data: { channel?: UpstreamChannel; mode?: 'unbound' | 'all'; max_per_proxy?: number; proxy_ids?: number[] }) =>
     request<AutoBalanceProxiesResult>('/proxies/auto-balance', { method: 'POST', body: JSON.stringify(data) }),
   listProxyRiskScoringProfiles: () =>
     request<{ profiles: ProxyRiskScoringProfile[] }>('/proxy-risk-scoring/profiles'),

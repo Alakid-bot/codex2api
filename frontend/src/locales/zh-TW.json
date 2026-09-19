@@ -1541,6 +1541,7 @@
   },
   "proxies": {
     "idle": "空閒",
+    "bindKindAntigravity": "Antigravity",
     "bindKindClaude": "Claude",
     "accountKind": {
       "codex": "Codex",
