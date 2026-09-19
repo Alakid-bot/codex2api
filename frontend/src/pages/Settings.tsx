@@ -2123,6 +2123,11 @@ export default function Settings() {
     { label: t('settings.clientCompatAuto'), value: 'auto' },
     { label: t('settings.clientCompatForce'), value: 'force' },
   ]
+  const codexTurnStateAccountModeOptions = [
+    { label: t('settings.codexTurnStateAccountModeAuto'), value: 'auto' },
+    { label: t('settings.codexTurnStateAccountModePersonal'), value: 'personal' },
+    { label: t('settings.codexTurnStateAccountModeTeam'), value: 'team' },
+  ]
   const usageLogModeOptions = [
     { label: t('settings.usageLogFull'), value: 'full' },
     { label: t('settings.usageLogErrors'), value: 'errors' },
@@ -2147,6 +2152,7 @@ export default function Settings() {
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
       codex_turn_state_template_cache_enabled: cacheNormalized.codex_turn_state_template_cache_enabled ?? false,
+      codex_turn_state_account_mode: (cacheNormalized.codex_turn_state_account_mode as SystemSettings['codex_turn_state_account_mode']) || 'auto',
       codex_telemetry_timing_debug: cacheNormalized.codex_telemetry_timing_debug ?? false,
       billing_tier_policy: normalizeBillingTierPolicyValue(cacheNormalized.billing_tier_policy),
       first_token_mode: 'loose',
@@ -2201,6 +2207,7 @@ export default function Settings() {
     codex_force_websocket: false,
     codex_telemetry_enabled: false,
     codex_turn_state_template_cache_enabled: false,
+    codex_turn_state_account_mode: 'auto',
     codex_telemetry_timing_debug: false,
     codex_request_compression: true,
     codex_ws_weak_network_mode: false,
@@ -4063,6 +4070,16 @@ export default function Settings() {
                       <Switch
                         checked={settingsForm.codex_turn_state_template_cache_enabled}
                         onCheckedChange={(checked) => autoSaveBooleanField('codex_turn_state_template_cache_enabled', checked)}
+                      />
+                    </SettingField>
+                    <SettingField
+                      label={t('settings.codexTurnStateAccountMode')}
+                      description={t('settings.codexTurnStateAccountModeDesc')}
+                    >
+                      <SegmentedPillGroup
+                        value={settingsForm.codex_turn_state_account_mode || 'auto'}
+                        onChange={(value) => autoSaveStringField('codex_turn_state_account_mode', value)}
+                        options={codexTurnStateAccountModeOptions}
                       />
                     </SettingField>
                     <SettingField

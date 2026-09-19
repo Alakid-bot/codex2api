@@ -2053,6 +2053,7 @@ export interface SystemSettings {
   codex_force_websocket: boolean
   codex_telemetry_enabled: boolean
   codex_turn_state_template_cache_enabled: boolean
+  codex_turn_state_account_mode: 'personal' | 'team' | 'auto' 
   codex_telemetry_timing_debug: boolean
   codex_request_compression: boolean
   codex_ws_weak_network_mode: boolean

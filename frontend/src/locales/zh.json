@@ -4593,8 +4593,8 @@
     "cliVersionSyncFailed": "版本同步失败",
     "codexCliVersionAutoSync": "定时自动同步",
     "codexCliVersionAutoSyncDesc": "开启后按下方间隔在后台自动拉取并更新模拟版本；关闭后仅保留手动「立即同步」。环境变量 CODEX_DISABLE_CLI_VERSION_SYNC=1 可强制关闭。",
-    "codexTurnStateTemplateCache": "Turn-State 292 模板缓存（实验性）",
-    "codexTurnStateTemplateCacheDesc": "按账号与精确上游 model 缓存上游响应中的 292 长度 X-Codex-Turn-State，出站时把 312（降质）替换为缓存的 292。默认关闭；从不伪造、从不从客户端请求头采集、从不跨账号/跨模型。",
+    "codexTurnStateTemplateCache": "Turn-State 模板缓存（实验性）",
+    "codexTurnStateTemplateCacheDesc": "按账号与精确上游 model 缓存上游响应中的 X-Codex-Turn-State Fernet 模板。个人：接受 blocks=10（~292），替换 blocks=11（~312）；Team：接受 12（~332），替换 13（~356）。默认关闭；从不伪造、从不从客户端请求头采集、从不跨账号/跨模型。注入后若连续两次响应形态不合格则清除该桶。",
     "codexTelemetry": "客户端遥测(实验性)",
     "codexTelemetryDesc": "使用所选客户端身份发送模拟的 Codex 分析事件与 OTLP 指标。事件是合成的，不来自真实工具调用。默认关闭；可用 CODEX_TELEMETRY_ENABLED=false 在部署层强制关闭。",
     "codexTelemetryTiming": "遥测计时探针（临时）",
@@ -5048,7 +5048,12 @@
     "claudeMaxToolCount": "最大工具数量",
     "claudeMaxToolCountDesc": "0 表示不设网关工具数量上限；非 0 用于运营侧资源保护。",
     "claudeMaxToolSchemaBytes": "工具 Schema 上限",
-    "claudeMaxToolSchemaBytesDesc": "0 表示不设网关 Schema 上限；请求体仍受系统大小和上游限制。"
+    "claudeMaxToolSchemaBytesDesc": "0 表示不设网关 Schema 上限；请求体仍受系统大小和上游限制。",
+    "codexTurnStateAccountMode": "Turn-State 账号规则",
+    "codexTurnStateAccountModeDesc": "personal / team / auto。auto 按账号 plan_type 提示选择（team|business→team；free|plus|pro→personal）。无套餐提示的 Team 用户请手动选 team。长度只是经验规则，不代表模型质量。",
+    "codexTurnStateAccountModeAuto": "自动",
+    "codexTurnStateAccountModePersonal": "个人",
+    "codexTurnStateAccountModeTeam": "Team"
   },
   "proxies": {
     "filterAll": "全部代理",

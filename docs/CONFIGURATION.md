@@ -75,13 +75,13 @@ Codex2API 采用三层配置架构：
 | `CODEX_TRANSPORT_MODE` | 否 | `standard` | Codex HTTP transport：默认标准 Go TLS；`utls_chrome` 可回滚旧 Chrome uTLS 行为 |
 | `CODEX_WS_SEND_USER_AGENT` | 否 | `true` | WS 握手是否发送 Codex `User-Agent`/`Version`；设为 `false` 可关闭 |
 | `CODEX_SESSION_AFFINITY_TTL` | 否 | `1h` | Codex 会话到账号/代理的黏性 TTL，支持 `1h`、`90m` 或秒数 |
-| ~~`CODEX_TURN_STATE_TEMPLATE_CACHE`~~ | — | — | **已弃用**：主开关改到管理后台「Turn-State 292 模板缓存（实验性）」（`codex_turn_state_template_cache_enabled`，默认关闭） |
-| `CODEX_TURN_STATE_TEMPLATE_LENGTH` | 否 | `292` | （可选调参）仅缓存该长度的模板值；主开关在系统设置 |
-| `CODEX_TURN_STATE_REPLACE_LENGTH` | 否 | `312` | （可选调参）`replace-only` 模式下仅当入站头为此长度时才替换 |
-| `CODEX_TURN_STATE_INJECT_MODE` | 否 | `replace-only` | （可选调参）`replace-only`：只替换长度为 `CODEX_TURN_STATE_REPLACE_LENGTH`（默认 312）的入站头；`always`：有缓存模板时强制写入（含空头） |
-| `CODEX_TURN_STATE_TTL` | 否 | `1h` | （可选调参）模板可用窗口；优先用 Fernet issuedAt，否则用采集时间 |
+| ~~`CODEX_TURN_STATE_TEMPLATE_CACHE`~~ | — | — | **已弃用**：主开关改到管理后台「Turn-State 模板缓存（实验性）」（`codex_turn_state_template_cache_enabled`，默认关闭）；账号规则 `codex_turn_state_account_mode`=`personal`\|`team`\|`auto`（默认 `auto`） |
+| `CODEX_TURN_STATE_TEMPLATE_LENGTH` | 否 | （由账号规则推导） | （可选调参）强制模板 Fernet 编码长度，须对应合法 blocks（个人 ~292 / Team ~332） |
+| `CODEX_TURN_STATE_REPLACE_LENGTH` | 否 | （由账号规则推导） | （可选调参）强制降质 Fernet 编码长度（个人 ~312 / Team ~356）；`replace-only` 按 **Blocks** 判定 |
+| `CODEX_TURN_STATE_INJECT_MODE` | 否 | `replace-only` | （可选调参）`replace-only`：仅当入站 Blocks=replace 时替换；`always`：有缓存模板时强制写入（含空头） |
+| `CODEX_TURN_STATE_TTL` | 否 | `1h` | （可选调参）Accept 窗口：`now < issued+(TTL-30s)`，且拒绝 issued 超前 >30s；无效信封永不存储 |
 | `CODEX_TURN_STATE_MAX_ENTRIES` | 否 | `256` | （可选调参）进程内缓存条目上限，超出按最旧 issuedAt 淘汰 |
-| `CODEX_TURN_STATE_LOG_DECISIONS` | 否 | `false` | （可选调参）记录 harvest/substitute/inject/pass 决策（仅 account/model/len，从不记录 state 值） |
+| `CODEX_TURN_STATE_LOG_DECISIONS` | 否 | `false` | （可选调参）记录 harvest/substitute/inject/pass/strike 决策（仅 account/model/len，从不记录 state 值） |
 | `CODEX_TURN_STATE_DRY_RUN` | 否 | `false` | （可选调参）只决策+打日志，不改写出站头 |
 | `CODEX_COMPACTION_AFFINITY_TTL` | 否 | `168h` | 加密压缩状态的来源亲和 TTL。缓存仅保存密文的 SHA-256 摘要、来源账号和兼容域；已知状态不会跨 Codex 官方、不同 Responses 中转或 Grok 上游流转 |
 | `CODEX_FINGERPRINT_DEBUG` | 否 | `false` | 输出脱敏指纹策略诊断日志，不记录 token |

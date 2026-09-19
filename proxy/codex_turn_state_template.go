@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -17,57 +18,78 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// X-Codex-Turn-State length-292 template cache (v1).
+// X-Codex-Turn-State Fernet template cache (v1, sleep-state aligned).
 //
 // Process-memory map keyed by (account DBID, exact upstream model) stores reusable
-// Fernet templates observed on upstream responses. Only len==template_length
-// (default 292) is stored; never forge; never harvest client request headers;
-// never cross account or model. Compose AFTER guardCodexTurnStateEcho.
+// Fernet templates observed on upstream responses. Accept uses Fernet Blocks
+// (personal 10 / team 12), never forges, never harvests client request headers,
+// never crosses account or model. Compose AFTER guardCodexTurnStateEcho.
 //
-// Master switch defaults OFF (CODEX_TURN_STATE_TEMPLATE_CACHE).
+// Master switch defaults OFF (settings: codex_turn_state_template_cache_enabled).
 
 const (
-	defaultTurnStateTemplateLength = 292
-	defaultTurnStateReplaceLength  = 312
-	defaultTurnStateTemplateTTL    = time.Hour
-	defaultTurnStateTemplateMax    = 256
+	turnStatePersonalTemplateBlocks = 10
+	turnStatePersonalReplaceBlocks  = 11
+	turnStateTeamTemplateBlocks     = 12
+	turnStateTeamReplaceBlocks      = 13
+
+	defaultTurnStateTemplateTTL = time.Hour
+	defaultTurnStateTemplateMax = 256
+	turnStateAcceptSkew         = 30 * time.Second
+	turnStateStrikeThreshold    = 2
+
+	turnStateAccountModePersonal = "personal"
+	turnStateAccountModeTeam     = "team"
+	turnStateAccountModeAuto     = "auto"
 
 	turnStateInjectReplaceOnly = "replace-only"
 	turnStateInjectAlways      = "always"
 )
 
 type turnStateTemplateConfig struct {
-	Enabled        bool
+	Enabled      bool
+	AccountMode  string
+	InjectMode   string
+	TTL          time.Duration
+	LogDecisions bool
+	MaxEntries   int
+	DryRun       bool
+	// Optional env length overrides (test / advanced). When set and mappable to
+	// Fernet block counts, they force TemplateBlocks/ReplaceBlocks for all modes.
+	ForceTemplateBlocks int
+	ForceReplaceBlocks  int
+}
+
+type turnStateLengthPolicy struct {
+	Mode           string
+	TemplateBlocks int
+	ReplaceBlocks  int
 	TemplateLength int
 	ReplaceLength  int
-	InjectMode     string
-	TTL            time.Duration
-	LogDecisions   bool
-	MaxEntries     int
-	DryRun         bool
+}
+
+func turnStateEncodedLength(blocks int) int {
+	return base64.URLEncoding.EncodedLen(57 + 16*blocks)
+}
+
+func blocksForEncodedLength(n int) (int, bool) {
+	for b := 1; b <= 32; b++ {
+		if turnStateEncodedLength(b) == n {
+			return b, true
+		}
+	}
+	return 0, false
 }
 
 func loadTurnStateTemplateConfig() turnStateTemplateConfig {
-	// Master switch is system settings (Codex experimental UI); env is no longer the primary toggle.
 	cfg := turnStateTemplateConfig{
-		Enabled:        CurrentRuntimeSettings().CodexTurnStateTemplateCache,
-		TemplateLength: defaultTurnStateTemplateLength,
-		ReplaceLength:  defaultTurnStateReplaceLength,
-		InjectMode:     turnStateInjectReplaceOnly,
-		TTL:            defaultTurnStateTemplateTTL,
-		LogDecisions:   parseTurnStateBoolEnv(os.Getenv("CODEX_TURN_STATE_LOG_DECISIONS")),
-		MaxEntries:     defaultTurnStateTemplateMax,
-		DryRun:         parseTurnStateBoolEnv(os.Getenv("CODEX_TURN_STATE_DRY_RUN")),
-	}
-	if v := strings.TrimSpace(os.Getenv("CODEX_TURN_STATE_TEMPLATE_LENGTH")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.TemplateLength = n
-		}
-	}
-	if v := strings.TrimSpace(os.Getenv("CODEX_TURN_STATE_REPLACE_LENGTH")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.ReplaceLength = n
-		}
+		Enabled:      CurrentRuntimeSettings().CodexTurnStateTemplateCache,
+		AccountMode:  NormalizeCodexTurnStateAccountMode(CurrentRuntimeSettings().CodexTurnStateAccountMode),
+		InjectMode:   turnStateInjectReplaceOnly,
+		TTL:          defaultTurnStateTemplateTTL,
+		LogDecisions: parseTurnStateBoolEnv(os.Getenv("CODEX_TURN_STATE_LOG_DECISIONS")),
+		MaxEntries:   defaultTurnStateTemplateMax,
+		DryRun:       parseTurnStateBoolEnv(os.Getenv("CODEX_TURN_STATE_DRY_RUN")),
 	}
 	if v := strings.TrimSpace(os.Getenv("CODEX_TURN_STATE_TTL")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
@@ -87,8 +109,26 @@ func loadTurnStateTemplateConfig() turnStateTemplateConfig {
 	default:
 		cfg.InjectMode = turnStateInjectReplaceOnly
 	}
-	// Reject equal/invalid lengths by disabling (arden rule).
-	if cfg.TemplateLength <= 0 || cfg.ReplaceLength <= 0 || cfg.TemplateLength == cfg.ReplaceLength {
+	if v := strings.TrimSpace(os.Getenv("CODEX_TURN_STATE_TEMPLATE_LENGTH")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if b, ok := blocksForEncodedLength(n); ok {
+				cfg.ForceTemplateBlocks = b
+			} else {
+				cfg.Enabled = false
+			}
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("CODEX_TURN_STATE_REPLACE_LENGTH")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if b, ok := blocksForEncodedLength(n); ok {
+				cfg.ForceReplaceBlocks = b
+			} else {
+				cfg.Enabled = false
+			}
+		}
+	}
+	if cfg.ForceTemplateBlocks > 0 && cfg.ForceReplaceBlocks > 0 &&
+		cfg.ForceTemplateBlocks == cfg.ForceReplaceBlocks {
 		cfg.Enabled = false
 	}
 	return cfg
@@ -96,6 +136,53 @@ func loadTurnStateTemplateConfig() turnStateTemplateConfig {
 
 func (c turnStateTemplateConfig) injectAlways() bool {
 	return c.InjectMode == turnStateInjectAlways
+}
+
+func (c turnStateTemplateConfig) policyFor(account *auth.Account) turnStateLengthPolicy {
+	mode := turnStateAccountModePersonal
+	switch c.AccountMode {
+	case turnStateAccountModePersonal, turnStateAccountModeTeam:
+		mode = c.AccountMode
+	default: // auto
+		if hint := turnStatePlanHint(account); hint != "" {
+			mode = hint
+		}
+	}
+	p := turnStateLengthPolicy{Mode: mode}
+	if mode == turnStateAccountModeTeam {
+		p.TemplateBlocks = turnStateTeamTemplateBlocks
+		p.ReplaceBlocks = turnStateTeamReplaceBlocks
+	} else {
+		p.TemplateBlocks = turnStatePersonalTemplateBlocks
+		p.ReplaceBlocks = turnStatePersonalReplaceBlocks
+	}
+	if c.ForceTemplateBlocks > 0 {
+		p.TemplateBlocks = c.ForceTemplateBlocks
+	}
+	if c.ForceReplaceBlocks > 0 {
+		p.ReplaceBlocks = c.ForceReplaceBlocks
+	}
+	p.TemplateLength = turnStateEncodedLength(p.TemplateBlocks)
+	p.ReplaceLength = turnStateEncodedLength(p.ReplaceBlocks)
+	return p
+}
+
+func turnStatePlanHint(account *auth.Account) string {
+	if account == nil {
+		return ""
+	}
+	// A selected workspace may differ from the token's default workspace.
+	if account.AccountIDOverridden() {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(account.GetPlanType())) {
+	case "team", "business":
+		return turnStateAccountModeTeam
+	case "free", "plus", "pro":
+		return turnStateAccountModePersonal
+	default:
+		return ""
+	}
 }
 
 func parseTurnStateBoolEnv(value string) bool {
@@ -107,6 +194,51 @@ func parseTurnStateBoolEnv(value string) bool {
 	}
 }
 
+// ==================== strict Fernet parse (sleep-state aligned) ====================
+
+type turnStateToken struct {
+	Value  string
+	Issued time.Time
+	Blocks int
+}
+
+func parseTurnStateToken(value string) (turnStateToken, error) {
+	var t turnStateToken
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 2048 || strings.ContainsAny(value, "\r\n\t ") {
+		return t, errors.New("invalid state encoding")
+	}
+	core := strings.TrimRight(value, "=")
+	if len(value)-len(core) > 2 {
+		return t, errors.New("invalid state padding")
+	}
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(core)
+	if err != nil || len(raw) < 73 || raw[0] != 0x80 || (len(raw)-57)%16 != 0 {
+		return t, errors.New("unrecognized state envelope")
+	}
+	issued := binary.BigEndian.Uint64(raw[1:9])
+	if issued < 1577836800 || issued >= 4102444800 {
+		return t, errors.New("state timestamp out of range")
+	}
+	return turnStateToken{
+		Value:  value,
+		Issued: time.Unix(int64(issued), 0),
+		Blocks: (len(raw) - 57) / 16,
+	}, nil
+}
+
+// Accept usable only if Blocks match, issued not >skew in the future, and
+// now is before issued+(TTL-skew). Matches sleep-state Policy.Accept.
+func turnStateTokenAccept(t turnStateToken, now time.Time, ttl time.Duration, expectedBlocks int) bool {
+	if t.Value == "" || t.Blocks != expectedBlocks {
+		return false
+	}
+	if t.Issued.After(now.Add(turnStateAcceptSkew)) {
+		return false
+	}
+	return now.Before(t.Issued.Add(ttl - turnStateAcceptSkew))
+}
+
 type turnStateTemplateKey struct {
 	AccountID int64
 	Model     string
@@ -115,6 +247,7 @@ type turnStateTemplateKey struct {
 type turnStateTemplateEntry struct {
 	Value    string
 	IssuedAt time.Time
+	Strikes  int
 }
 
 type turnStateTemplateStore struct {
@@ -149,25 +282,7 @@ func setTurnStateTemplateNowForTest(now func() time.Time) {
 	globalTurnStateTemplates.now = now
 }
 
-func turnStateTemplateUsable(issuedAt, now time.Time, ttl time.Duration) bool {
-	if issuedAt.After(now) {
-		return false
-	}
-	return now.Before(issuedAt.Add(ttl))
-}
-
-// fernetIssuedAt extracts the issuance time embedded in a Codex
-// X-Codex-Turn-State Fernet token: 0x80 || be64(unix secs) || …, base64url.
-func fernetIssuedAt(value string) (time.Time, bool) {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(value, "="))
-	if err != nil || len(raw) < 9 || raw[0] != 0x80 {
-		return time.Time{}, false
-	}
-	secs := binary.BigEndian.Uint64(raw[1:9])
-	return time.Unix(int64(secs), 0), true
-}
-
-func (s *turnStateTemplateStore) capture(cfg turnStateTemplateConfig, accountID int64, model string, values ...string) bool {
+func (s *turnStateTemplateStore) capture(cfg turnStateTemplateConfig, policy turnStateLengthPolicy, accountID int64, model string, values ...string) bool {
 	if !cfg.Enabled || accountID <= 0 {
 		return false
 	}
@@ -176,32 +291,32 @@ func (s *turnStateTemplateStore) capture(cfg turnStateTemplateConfig, accountID 
 		return false
 	}
 	value := values[0]
-	if value == "" || len(value) != cfg.TemplateLength {
+	if value == "" {
 		return false
 	}
-	issued, ok := fernetIssuedAt(value)
-	now := s.now()
-	if !ok {
-		issued = now
+	tok, err := parseTurnStateToken(value)
+	if err != nil {
+		// Parse failure / invalid envelope → never store, never fallback issued=now.
+		return false
 	}
-	// Reject expired/future-issued templates before purge/eviction/store so a
-	// bad capture cannot shrink a full cache.
-	if !turnStateTemplateUsable(issued, now, cfg.TTL) {
+	now := s.now()
+	if !turnStateTokenAccept(tok, now, cfg.TTL, policy.TemplateBlocks) {
 		return false
 	}
 	key := turnStateTemplateKey{AccountID: accountID, Model: model}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.purgeExpiredLocked(cfg.TTL, now)
+	s.purgeExpiredLocked(cfg, policy.TemplateBlocks, now)
 	if _, exists := s.entries[key]; !exists {
 		s.evictOldestLocked(cfg.MaxEntries)
 	}
-	s.entries[key] = turnStateTemplateEntry{Value: value, IssuedAt: issued}
+	prev := s.entries[key]
+	s.entries[key] = turnStateTemplateEntry{Value: tok.Value, IssuedAt: tok.Issued, Strikes: prev.Strikes}
 	return true
 }
 
-func (s *turnStateTemplateStore) lookup(cfg turnStateTemplateConfig, accountID int64, model string) (string, bool) {
+func (s *turnStateTemplateStore) lookup(cfg turnStateTemplateConfig, policy turnStateLengthPolicy, accountID int64, model string) (string, bool) {
 	if !cfg.Enabled || accountID <= 0 {
 		return "", false
 	}
@@ -213,15 +328,51 @@ func (s *turnStateTemplateStore) lookup(cfg turnStateTemplateConfig, accountID i
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
-	s.purgeExpiredLocked(cfg.TTL, now)
+	s.purgeExpiredLocked(cfg, policy.TemplateBlocks, now)
 	entry, ok := s.entries[key]
-	if !ok || !turnStateTemplateUsable(entry.IssuedAt, now, cfg.TTL) {
-		if ok {
-			delete(s.entries, key)
-		}
+	if !ok {
+		return "", false
+	}
+	tok, err := parseTurnStateToken(entry.Value)
+	if err != nil || !turnStateTokenAccept(tok, now, cfg.TTL, policy.TemplateBlocks) {
+		delete(s.entries, key)
 		return "", false
 	}
 	return entry.Value, true
+}
+
+func (s *turnStateTemplateStore) observePostInject(cfg turnStateTemplateConfig, policy turnStateLengthPolicy, accountID int64, model, responseValue string) (cleared bool, strikes int) {
+	if !cfg.Enabled || accountID <= 0 {
+		return false, 0
+	}
+	model = strings.TrimSpace(model)
+	if model == "" || strings.TrimSpace(responseValue) == "" {
+		return false, 0
+	}
+	key := turnStateTemplateKey{AccountID: accountID, Model: model}
+	now := s.now()
+	tok, err := parseTurnStateToken(responseValue)
+	suspect := err != nil || !turnStateTokenAccept(tok, now, cfg.TTL, policy.TemplateBlocks)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.entries[key]
+	if !ok {
+		return false, 0
+	}
+	if !suspect {
+		entry.Strikes = 0
+		s.entries[key] = entry
+		return false, 0
+	}
+	entry.Strikes++
+	strikes = entry.Strikes
+	if entry.Strikes >= turnStateStrikeThreshold {
+		delete(s.entries, key)
+		return true, strikes
+	}
+	s.entries[key] = entry
+	return false, strikes
 }
 
 func (s *turnStateTemplateStore) clearAccount(accountID int64) {
@@ -237,9 +388,19 @@ func (s *turnStateTemplateStore) clearAccount(accountID int64) {
 	}
 }
 
-func (s *turnStateTemplateStore) purgeExpiredLocked(ttl time.Duration, now time.Time) {
+func (s *turnStateTemplateStore) clearKey(accountID int64, model string) {
+	if accountID <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.entries, turnStateTemplateKey{AccountID: accountID, Model: strings.TrimSpace(model)})
+}
+
+func (s *turnStateTemplateStore) purgeExpiredLocked(cfg turnStateTemplateConfig, templateBlocks int, now time.Time) {
 	for key, entry := range s.entries {
-		if !turnStateTemplateUsable(entry.IssuedAt, now, ttl) {
+		tok, err := parseTurnStateToken(entry.Value)
+		if err != nil || !turnStateTokenAccept(tok, now, cfg.TTL, templateBlocks) {
 			delete(s.entries, key)
 		}
 	}
@@ -272,6 +433,12 @@ func (s *turnStateTemplateStore) lenForTest() int {
 	return len(s.entries)
 }
 
+func (s *turnStateTemplateStore) strikesForTest(accountID int64, model string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.entries[turnStateTemplateKey{AccountID: accountID, Model: model}].Strikes
+}
+
 func accountEligibleForTurnStateTemplate(account *auth.Account) bool {
 	if account == nil || account.ID() <= 0 {
 		return false
@@ -284,13 +451,15 @@ func accountEligibleForTurnStateTemplate(account *auth.Account) bool {
 }
 
 // CaptureCodexTurnStateTemplate stores an upstream-minted template when enabled
-// and the sole header value length matches template_length. Never stores
-// replace_length / other lengths. Never harvest client request headers.
-func CaptureCodexTurnStateTemplate(account *auth.Account, model string, headers http.Header) {
+// and the sole header value Accept(template policy). Never stores replace/degraded
+// shapes. Never harvest client request headers. When this request rewrote outbound
+// state, observes response shape and may clear the bucket after strike threshold.
+func CaptureCodexTurnStateTemplate(ctx context.Context, account *auth.Account, model string, headers http.Header) {
 	cfg := loadTurnStateTemplateConfig()
 	if !cfg.Enabled || !accountEligibleForTurnStateTemplate(account) || headers == nil {
 		return
 	}
+	policy := cfg.policyFor(account)
 	values := headers.Values(codexTurnStateHeader)
 	trimmed := make([]string, 0, len(values))
 	for _, v := range values {
@@ -301,14 +470,29 @@ func CaptureCodexTurnStateTemplate(account *auth.Account, model string, headers 
 	if len(trimmed) == 0 {
 		return
 	}
-	stored := globalTurnStateTemplates.capture(cfg, account.ID(), model, trimmed...)
+	responseValue := trimmed[0]
+	if turnStateTemplateRewrittenFromContext(ctx) {
+		cleared, strikes := globalTurnStateTemplates.observePostInject(cfg, policy, account.ID(), model, responseValue)
+		if cfg.LogDecisions {
+			if cleared {
+				logTurnStateTemplateDecision(cfg, "strike-clear", account.ID(), model, len(responseValue),
+					"post-inject shape failed Accept; cleared after "+strconv.Itoa(strikes)+" strikes")
+			} else if strikes > 0 {
+				logTurnStateTemplateDecision(cfg, "strike", account.ID(), model, len(responseValue),
+					"post-inject shape failed Accept; strikes="+strconv.Itoa(strikes))
+			}
+		}
+	}
+	stored := globalTurnStateTemplates.capture(cfg, policy, account.ID(), model, trimmed...)
 	if stored {
 		logTurnStateTemplateDecision(cfg, "harvest", account.ID(), model, len(trimmed[0]), "template stored")
 		return
 	}
-	if cfg.LogDecisions && len(trimmed) == 1 && len(trimmed[0]) == cfg.ReplaceLength {
-		logTurnStateTemplateDecision(cfg, "skip", account.ID(), model, len(trimmed[0]),
-			"upstream issued degraded state (len=replace_length)")
+	if cfg.LogDecisions && len(trimmed) == 1 {
+		if tok, err := parseTurnStateToken(trimmed[0]); err == nil && tok.Blocks == policy.ReplaceBlocks {
+			logTurnStateTemplateDecision(cfg, "skip", account.ID(), model, len(trimmed[0]),
+				"upstream issued degraded state (blocks=replace)")
+		}
 	}
 }
 
@@ -317,31 +501,36 @@ func ClearCodexTurnStateTemplatesForAccount(accountID int64) {
 	globalTurnStateTemplates.clearAccount(accountID)
 }
 
-func decideCodexTurnStateHeader(cfg turnStateTemplateConfig, inbound, tmpl string, haveTmpl bool) (decision, reason, replacement string) {
+func decideCodexTurnStateHeader(cfg turnStateTemplateConfig, policy turnStateLengthPolicy, inbound, tmpl string, haveTmpl bool) (decision, reason, replacement string) {
+	inboundTok, inboundErr := parseTurnStateToken(inbound)
+	parsed := inboundErr == nil
+	isDegraded := parsed && inboundTok.Blocks == policy.ReplaceBlocks
 	if haveTmpl && inbound != tmpl {
 		if cfg.injectAlways() {
-			return "inject", injectTurnStateReason(inbound, cfg), tmpl
+			return "inject", injectTurnStateReason(inbound, parsed, isDegraded, policy), tmpl
 		}
-		if inbound != "" && len(inbound) == cfg.ReplaceLength {
-			return "substitute", "inbound len=replace_length", tmpl
+		if isDegraded {
+			return "substitute", "inbound blocks=replace", tmpl
 		}
 	}
 	switch {
 	case haveTmpl && inbound == tmpl:
 		return "pass", "header already current", ""
-	case len(inbound) == cfg.ReplaceLength && !haveTmpl:
+	case isDegraded && !haveTmpl:
 		return "pass", "no live template for bucket", ""
 	default:
 		return "pass", "nothing to do", ""
 	}
 }
 
-func injectTurnStateReason(value string, cfg turnStateTemplateConfig) string {
-	switch len(value) {
-	case 0:
+func injectTurnStateReason(value string, parsed, degraded bool, policy turnStateLengthPolicy) string {
+	switch {
+	case value == "":
 		return "added (request carried no state)"
-	case cfg.ReplaceLength:
+	case degraded:
 		return "replaced degraded state"
+	case parsed:
+		return "replaced non-template state (blocks)"
 	default:
 		return "replaced non-template state (len " + strconv.Itoa(len(value)) + ")"
 	}
@@ -360,9 +549,10 @@ func ApplyCodexTurnStateTemplate(ctx context.Context, headers http.Header, accou
 	if model == "" {
 		return
 	}
+	policy := cfg.policyFor(account)
 	inbound := strings.TrimSpace(headers.Get(codexTurnStateHeader))
-	tmpl, ok := globalTurnStateTemplates.lookup(cfg, account.ID(), model)
-	decision, reason, replacement := decideCodexTurnStateHeader(cfg, inbound, tmpl, ok)
+	tmpl, ok := globalTurnStateTemplates.lookup(cfg, policy, account.ID(), model)
+	decision, reason, replacement := decideCodexTurnStateHeader(cfg, policy, inbound, tmpl, ok)
 	outboundLen := len(inbound)
 	rewritten := false
 	if replacement != "" && !cfg.DryRun {
@@ -414,6 +604,16 @@ func turnStateTemplateAuditFromContext(ctx context.Context) *turnStateTemplateAu
 	}
 	audit, _ := ctx.Value(turnStateTemplateAuditContextKey{}).(*turnStateTemplateAudit)
 	return audit
+}
+
+func turnStateTemplateRewrittenFromContext(ctx context.Context) bool {
+	audit := turnStateTemplateAuditFromContext(ctx)
+	if audit == nil {
+		return false
+	}
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	return audit.recorded && audit.rewritten
 }
 
 func attachTurnStateTemplateAudit(c *gin.Context) {
@@ -469,4 +669,3 @@ func populateTurnStateTemplateMetaFromRequest(c *gin.Context, input *database.Us
 	}
 	input.TurnStateRewriteNote = note
 }
-

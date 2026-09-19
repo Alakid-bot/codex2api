@@ -40,7 +40,7 @@ var (
 func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, account *auth.Account, model string, headers http.Header) {
 	// Capture whenever upstream minted a template for this account+model,
 	// independent of whether we relay the header to the client.
-	CaptureCodexTurnStateTemplate(account, model, headers)
+	CaptureCodexTurnStateTemplate(turnStateCtxFromGin(c), account, model, headers)
 	if c == nil {
 		return
 	}
@@ -64,7 +64,7 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 // the token is intentionally omitted instead of leaking stale account state.
 func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuousRetryStreamAttempt, affinityKey string, account *auth.Account, model string, headers http.Header) error {
 	// Capture upstream mint even if local commit later fails to relay the header.
-	CaptureCodexTurnStateTemplate(account, model, headers)
+	CaptureCodexTurnStateTemplate(turnStateCtxFromGin(c), account, model, headers)
 	if attempt == nil {
 		return h.commitStreamAttempt(c, attempt)
 	}
@@ -128,7 +128,6 @@ func guardCodexTurnStateEcho(affinityKey string, account *auth.Account, headers 
 	}
 }
 
-
 type codexTurnStateAffinityContextKey struct{}
 
 // WithCodexTurnStateAffinityKey attaches the session affinity key used by
@@ -169,6 +168,13 @@ func ClearCodexTurnStateProvenance(affinityKey string) {
 		return
 	}
 	codexTurnStateOrigins.Delete(affinityKey)
+}
+
+func turnStateCtxFromGin(c *gin.Context) context.Context {
+	if c != nil && c.Request != nil {
+		return c.Request.Context()
+	}
+	return context.Background()
 }
 
 func noteCodexTurnStateProvenance(affinityKey string, account *auth.Account) {
