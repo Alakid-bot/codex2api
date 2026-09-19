@@ -267,6 +267,11 @@ func templateInputFromPayload(req imagePromptTemplatePayload, existing *database
 }
 
 func (h *Handler) CreateImageGenerationJob(c *gin.Context) {
+	releaseIntake, admitted := h.imageQueueIntake(c)
+	if !admitted {
+		return
+	}
+	defer releaseIntake()
 	var req imageGenerationJobPayload
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, http.StatusBadRequest, "请求体无效")
@@ -318,6 +323,10 @@ func (h *Handler) CreateImageGenerationJob(c *gin.Context) {
 	if h.inspectImageStudioPromptFilter(c, proxy.AppendImageStyleToPrompt(req.Prompt, req.Style), req.Model, keyID, keyName, keyMasked) {
 		return
 	}
+	if h.imageQueue != nil {
+		h.persistQueuedImageJob(c, req, apiKey, http.StatusOK, false)
+		return
+	}
 	jobID, err := h.db.InsertImageGenerationJob(ctx, database.ImageGenerationJobInput{
 		Prompt:       req.Prompt,
 		ParamsJSON:   string(paramsJSON),
@@ -355,6 +364,11 @@ func (h *Handler) CreateImageGenerationJob(c *gin.Context) {
 }
 
 func (h *Handler) CreateImageEditJob(c *gin.Context) {
+	releaseIntake, admitted := h.imageQueueIntake(c)
+	if !admitted {
+		return
+	}
+	defer releaseIntake()
 	var req imageGenerationJobPayload
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, http.StatusBadRequest, "请求体无效")
@@ -412,6 +426,10 @@ func (h *Handler) CreateImageEditJob(c *gin.Context) {
 	paramsJSON, _ := json.Marshal(req)
 	keyID, keyName, keyMasked := imageJobAPIKeyMeta(apiKey)
 	if h.inspectImageStudioPromptFilter(c, proxy.AppendImageStyleToPrompt(req.Prompt, req.Style), req.Model, keyID, keyName, keyMasked) {
+		return
+	}
+	if h.imageQueue != nil {
+		h.persistQueuedImageJob(c, req, apiKey, http.StatusOK, false)
 		return
 	}
 	jobID, err := h.db.InsertImageGenerationJob(ctx, database.ImageGenerationJobInput{
@@ -798,6 +816,8 @@ type imageJobRunOptions struct {
 	// API key's concurrency slot for this whole job, so the in-process upstream
 	// calls must not reserve a second one for the same key.
 	sharedAPIKeyConcurrency bool
+	queueContext            context.Context
+	queueOwner              string
 }
 
 // imageJobBaseTimeout budgets one upstream output. A batch issues one call per
@@ -823,9 +843,15 @@ func imageJobStatusContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 15*time.Second)
 }
 
-func (h *Handler) markImageJobSucceededDetached(jobID int64, warning string, durationMs int) {
+func (h *Handler) markImageJobSucceededDetached(jobID int64, warning string, durationMs int, owners ...string) {
 	ctx, cancel := imageJobStatusContext()
 	defer cancel()
+	if len(owners) > 0 && owners[0] != "" {
+		if err := h.db.FinishLeasedImageJob(ctx, jobID, owners[0], database.ImageJobSucceeded, warning, durationMs); err != nil {
+			logImageJobError(jobID, err)
+		}
+		return
+	}
 	var err error
 	if warning != "" {
 		err = h.db.MarkImageJobSucceededWithWarning(ctx, jobID, warning, durationMs)
@@ -837,24 +863,36 @@ func (h *Handler) markImageJobSucceededDetached(jobID int64, warning string, dur
 	}
 }
 
-func (h *Handler) markImageJobFailedDetached(jobID int64, message string, durationMs int) {
+func (h *Handler) markImageJobFailedDetached(jobID int64, message string, durationMs int, owners ...string) {
 	ctx, cancel := imageJobStatusContext()
 	defer cancel()
+	if len(owners) > 0 && owners[0] != "" {
+		if err := h.db.FinishLeasedImageJob(ctx, jobID, owners[0], database.ImageJobFailed, message, durationMs); err != nil {
+			logImageJobError(jobID, err)
+		}
+		return
+	}
 	if err := h.db.MarkImageJobFailed(ctx, jobID, message, durationMs); err != nil {
 		logImageJobError(jobID, err)
 	}
 }
 
 func (h *Handler) runImageGenerationJob(jobID int64, req imageGenerationJobPayload, apiKey *database.APIKeyRow, opts imageJobRunOptions) {
-	ctx, cancel := context.WithTimeout(context.Background(), imageJobTimeout(req.N))
+	parent := opts.queueContext
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, imageJobTimeout(req.N))
 	defer cancel()
 	ctx, settleBilling := proxy.DeferImageJobBilling(ctx)
 	deliveredImages := 0
 	defer func() { settleBilling(deliveredImages) }()
 	start := time.Now()
-	if err := h.db.MarkImageJobRunning(ctx, jobID); err != nil {
-		logImageJobError(jobID, err)
-		return
+	if opts.queueOwner == "" {
+		if err := h.db.MarkImageJobRunning(ctx, jobID); err != nil {
+			logImageJobError(jobID, err)
+			return
+		}
 	}
 	log.Printf("[image-studio] job=%d started model=%s size=%s quality=%s format=%s background=%s api_key=%s prompt_chars=%d",
 		jobID,
@@ -872,7 +910,7 @@ func (h *Handler) runImageGenerationJob(jobID int64, req imageGenerationJobPaylo
 	if err != nil {
 		durationMs := int(time.Since(start).Milliseconds())
 		log.Printf("[image-studio] job=%d failed duration=%s stage=build_request error=%s", jobID, imageLogDuration(durationMs), security.SanitizeLog(err.Error()))
-		h.markImageJobFailedDetached(jobID, err.Error(), durationMs)
+		h.markImageJobFailedDetached(jobID, err.Error(), durationMs, opts.queueOwner)
 		return
 	}
 	log.Printf("[image-studio] job=%d upstream request model=%s size=%s quality=%s format=%s body_bytes=%d prompt_chars=%d%s",
@@ -900,7 +938,7 @@ func (h *Handler) runImageGenerationJob(jobID int64, req imageGenerationJobPaylo
 		if buildErr != nil {
 			durationMs := int(time.Since(start).Milliseconds())
 			log.Printf("[image-studio] job=%d failed duration=%s stage=build_jpeg_fallback error=%s", jobID, imageLogDuration(durationMs), security.SanitizeLog(buildErr.Error()))
-			h.markImageJobFailedDetached(jobID, buildErr.Error(), durationMs)
+			h.markImageJobFailedDetached(jobID, buildErr.Error(), durationMs, opts.queueOwner)
 			return
 		}
 		fallbackStyledPrompt := proxy.AppendImageStyleToPrompt(fallbackReq.Prompt, fallbackReq.Style)
@@ -920,7 +958,7 @@ func (h *Handler) runImageGenerationJob(jobID int64, req imageGenerationJobPaylo
 		if err == nil {
 			req = fallbackReq
 			rawBody = fallbackBody
-			if paramsJSON, marshalErr := json.Marshal(fallbackReq); marshalErr == nil {
+			if paramsJSON, marshalErr := json.Marshal(fallbackReq); marshalErr == nil && opts.queueOwner == "" {
 				if updateErr := h.db.UpdateImageGenerationJobParamsJSON(ctx, jobID, string(paramsJSON)); updateErr != nil {
 					logImageJobError(jobID, updateErr)
 				}
@@ -943,7 +981,7 @@ func (h *Handler) runImageGenerationJob(jobID int64, req imageGenerationJobPaylo
 			upstreamStatus,
 			security.SanitizeLog(err.Error()),
 		)
-		h.markImageJobFailedDetached(jobID, err.Error(), durationMs)
+		h.markImageJobFailedDetached(jobID, err.Error(), durationMs, opts.queueOwner)
 		return
 	}
 	log.Printf("[image-studio] job=%d upstream completed duration=%s upstream_status=%d response_bytes=%d",
@@ -959,7 +997,7 @@ func (h *Handler) runImageGenerationJob(jobID int64, req imageGenerationJobPaylo
 	if err != nil {
 		if len(assets) == 0 {
 			log.Printf("[image-studio] job=%d failed duration=%s stage=save_assets error=%s", jobID, imageLogDuration(durationMs), security.SanitizeLog(err.Error()))
-			h.markImageJobFailedDetached(jobID, err.Error(), durationMs)
+			h.markImageJobFailedDetached(jobID, err.Error(), durationMs, opts.queueOwner)
 			return
 		}
 		// Outputs saved before the failure remain available and will be billed.
@@ -970,16 +1008,16 @@ func (h *Handler) runImageGenerationJob(jobID int64, req imageGenerationJobPaylo
 	}
 	if len(assets) == 0 {
 		log.Printf("[image-studio] job=%d failed duration=%s stage=save_assets error=%s", jobID, imageLogDuration(durationMs), "上游未返回图片")
-		h.markImageJobFailedDetached(jobID, "上游未返回图片", durationMs)
+		h.markImageJobFailedDetached(jobID, "上游未返回图片", durationMs, opts.queueOwner)
 		return
 	}
 	if len(partialErrors) > 0 {
 		warning := strings.Join(partialErrors, "; ")
-		h.markImageJobSucceededDetached(jobID, warning, durationMs)
+		h.markImageJobSucceededDetached(jobID, warning, durationMs, opts.queueOwner)
 		log.Printf("[image-studio] job=%d partial_success requested=%d completed=%d warning=%s",
 			jobID, req.N, len(assets), security.SanitizeLog(warning))
 	} else {
-		h.markImageJobSucceededDetached(jobID, "", durationMs)
+		h.markImageJobSucceededDetached(jobID, "", durationMs, opts.queueOwner)
 	}
 	log.Printf("[image-studio] job=%d succeeded duration=%s assets=%d total_bytes=%d first_size=%s dir=%s",
 		jobID,
@@ -1024,15 +1062,21 @@ func buildAdminImageEditRequest(req imageGenerationJobPayload) ([]byte, error) {
 }
 
 func (h *Handler) runImageEditJob(jobID int64, req imageGenerationJobPayload, apiKey *database.APIKeyRow, opts imageJobRunOptions) {
-	ctx, cancel := context.WithTimeout(context.Background(), imageJobTimeout(req.N))
+	parent := opts.queueContext
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, imageJobTimeout(req.N))
 	defer cancel()
 	ctx, settleBilling := proxy.DeferImageJobBilling(ctx)
 	deliveredImages := 0
 	defer func() { settleBilling(deliveredImages) }()
 	start := time.Now()
-	if err := h.db.MarkImageJobRunning(ctx, jobID); err != nil {
-		logImageJobError(jobID, err)
-		return
+	if opts.queueOwner == "" {
+		if err := h.db.MarkImageJobRunning(ctx, jobID); err != nil {
+			logImageJobError(jobID, err)
+			return
+		}
 	}
 	log.Printf("[image-studio] job=%d started mode=edit model=%s image_count=%d prompt_chars=%d",
 		jobID,
@@ -1045,7 +1089,7 @@ func (h *Handler) runImageEditJob(jobID int64, req imageGenerationJobPayload, ap
 	if err != nil {
 		durationMs := int(time.Since(start).Milliseconds())
 		log.Printf("[image-studio] job=%d failed mode=edit duration=%s stage=build_request error=%s", jobID, imageLogDuration(durationMs), security.SanitizeLog(err.Error()))
-		h.markImageJobFailedDetached(jobID, err.Error(), durationMs)
+		h.markImageJobFailedDetached(jobID, err.Error(), durationMs, opts.queueOwner)
 		return
 	}
 
@@ -1064,7 +1108,7 @@ func (h *Handler) runImageEditJob(jobID int64, req imageGenerationJobPayload, ap
 		if buildErr != nil {
 			durationMs := int(time.Since(start).Milliseconds())
 			log.Printf("[image-studio] job=%d failed mode=edit duration=%s stage=build_jpeg_fallback error=%s", jobID, imageLogDuration(durationMs), security.SanitizeLog(buildErr.Error()))
-			h.markImageJobFailedDetached(jobID, buildErr.Error(), durationMs)
+			h.markImageJobFailedDetached(jobID, buildErr.Error(), durationMs, opts.queueOwner)
 			return
 		}
 		log.Printf("[image-studio] job=%d png_failed_retrying_jpeg mode=edit upstream_status=%d error=%s",
@@ -1078,7 +1122,7 @@ func (h *Handler) runImageEditJob(jobID int64, req imageGenerationJobPayload, ap
 		if err == nil {
 			req = fallbackReq
 			rawBody = fallbackBody
-			if paramsJSON, marshalErr := json.Marshal(fallbackReq); marshalErr == nil {
+			if paramsJSON, marshalErr := json.Marshal(fallbackReq); marshalErr == nil && opts.queueOwner == "" {
 				if updateErr := h.db.UpdateImageGenerationJobParamsJSON(ctx, jobID, string(paramsJSON)); updateErr != nil {
 					logImageJobError(jobID, updateErr)
 				}
@@ -1101,7 +1145,7 @@ func (h *Handler) runImageEditJob(jobID int64, req imageGenerationJobPayload, ap
 			upstreamStatus,
 			security.SanitizeLog(err.Error()),
 		)
-		h.markImageJobFailedDetached(jobID, err.Error(), durationMs)
+		h.markImageJobFailedDetached(jobID, err.Error(), durationMs, opts.queueOwner)
 		return
 	}
 	log.Printf("[image-studio] job=%d upstream completed mode=edit duration=%s upstream_status=%d response_bytes=%d",
@@ -1117,7 +1161,7 @@ func (h *Handler) runImageEditJob(jobID int64, req imageGenerationJobPayload, ap
 	if err != nil {
 		if len(assets) == 0 {
 			log.Printf("[image-studio] job=%d failed mode=edit duration=%s stage=save_assets error=%s", jobID, imageLogDuration(durationMs), security.SanitizeLog(err.Error()))
-			h.markImageJobFailedDetached(jobID, err.Error(), durationMs)
+			h.markImageJobFailedDetached(jobID, err.Error(), durationMs, opts.queueOwner)
 			return
 		}
 		partialErrors = append(partialErrors, err.Error())
@@ -1125,16 +1169,16 @@ func (h *Handler) runImageEditJob(jobID int64, req imageGenerationJobPayload, ap
 	}
 	if len(assets) == 0 {
 		log.Printf("[image-studio] job=%d failed mode=edit duration=%s stage=save_assets error=%s", jobID, imageLogDuration(durationMs), "上游未返回图片")
-		h.markImageJobFailedDetached(jobID, "上游未返回图片", durationMs)
+		h.markImageJobFailedDetached(jobID, "上游未返回图片", durationMs, opts.queueOwner)
 		return
 	}
 	if len(partialErrors) > 0 {
 		warning := strings.Join(partialErrors, "; ")
-		h.markImageJobSucceededDetached(jobID, warning, durationMs)
+		h.markImageJobSucceededDetached(jobID, warning, durationMs, opts.queueOwner)
 		log.Printf("[image-studio] job=%d partial_success mode=edit requested=%d completed=%d warning=%s",
 			jobID, req.N, len(assets), security.SanitizeLog(warning))
 	} else {
-		h.markImageJobSucceededDetached(jobID, "", durationMs)
+		h.markImageJobSucceededDetached(jobID, "", durationMs, opts.queueOwner)
 	}
 	log.Printf("[image-studio] job=%d succeeded mode=edit duration=%s assets=%d total_bytes=%d first_size=%s",
 		jobID,
@@ -1324,6 +1368,11 @@ func (h *Handler) saveImageJobAssets(ctx context.Context, jobID int64, req image
 		imageBytes, mimeType, format, err := decodeImageDataItem(item)
 		if err != nil {
 			return saved, warnings, err
+		}
+		if h.imageQueue != nil {
+			if err := checkQueueImage(imageBytes); err != nil {
+				return saved, warnings, fmt.Errorf("output %d: %w", idx+1, err)
+			}
 		}
 		strictSize := strictImageJobSize(req)
 		if req.Upscale != "" || strictSize {

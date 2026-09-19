@@ -446,6 +446,13 @@ func main() {
 
 	handler.RegisterRoutes(r)
 	adminHandler.RegisterExternalImageRoutes(r, handler)
+	imageWorkers, queueErr := admin.ImageJobWorkerCount()
+	if queueErr != nil {
+		log.Fatal(queueErr)
+	}
+	if err := adminHandler.StartImageJobQueue(backgroundCtx, imageWorkers); err != nil {
+		log.Fatalf("Initialize image queue: %v", err)
+	}
 	adminHandler.StartPromptIntelligence(backgroundCtx)
 	adminHandler.RegisterRoutes(r)
 

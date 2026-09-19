@@ -1173,6 +1173,11 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 }
 
 func (h *Handler) ImagesGenerations(c *gin.Context) {
+	releaseImage, admitted := admitDirectImageExecution(c)
+	if !admitted {
+		return
+	}
+	defer releaseImage()
 	rawBody, err := readRawRequestBody(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "Invalid request: " + err.Error(), "type": "invalid_request_error"}})
@@ -1252,6 +1257,11 @@ func (h *Handler) ImagesGenerations(c *gin.Context) {
 }
 
 func (h *Handler) ImagesEdits(c *gin.Context) {
+	releaseImage, admitted := admitDirectImageExecution(c)
+	if !admitted {
+		return
+	}
+	defer releaseImage()
 	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
 	if strings.HasPrefix(contentType, "application/json") {
 		h.imagesEditsFromJSON(c)

@@ -45,6 +45,7 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
+	imageQueue         *imageJobQueue
 	qualityTestContext context.Context
 	qualityTestWG      sync.WaitGroup
 	store              *auth.Store
@@ -1048,8 +1049,10 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 	handler.autoActivate5hWake = make(chan struct{}, 1)
 	if db != nil {
 		handler.recordAccountEvent = db.InsertAccountEventAsync
-		if err := db.MarkInterruptedImageJobs(context.Background()); err != nil {
-			log.Printf("标记中断生图任务失败: %v", err)
+		if workers, _ := ImageJobWorkerCount(); workers == 0 {
+			if err := db.MarkInterruptedImageJobs(context.Background()); err != nil {
+				log.Printf("标记中断生图任务失败: %v", err)
+			}
 		}
 	}
 	return handler

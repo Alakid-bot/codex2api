@@ -128,6 +128,11 @@ func (h *Handler) PublicImageStudioPageEnabled(ctx context.Context) (bool, error
 }
 
 func (h *Handler) CreatePortalImageJob(c *gin.Context) {
+	releaseIntake, admitted := h.imageQueueIntake(c)
+	if !admitted {
+		return
+	}
+	defer releaseIntake()
 	apiKey := portalAPIKeyFromContext(c)
 	if apiKey == nil {
 		writeError(c, http.StatusUnauthorized, "缺少或无效的 API Key")
@@ -148,6 +153,11 @@ func (h *Handler) CreatePortalImageJob(c *gin.Context) {
 }
 
 func (h *Handler) CreatePortalImageEditJob(c *gin.Context) {
+	releaseIntake, admitted := h.imageQueueIntake(c)
+	if !admitted {
+		return
+	}
+	defer releaseIntake()
 	apiKey := portalAPIKeyFromContext(c)
 	if apiKey == nil {
 		writeError(c, http.StatusUnauthorized, "缺少或无效的 API Key")
@@ -231,6 +241,10 @@ func (h *Handler) enqueuePortalImageJob(c *gin.Context, apiKey *database.APIKeyR
 	}
 	if status, msg := imageProxy.EnforceAPIKeyLimitsForRequests(c, req.Model, req.N); status != 0 {
 		proxy.SendAPIKeyLimitError(c, status, msg)
+		return
+	}
+	if h.imageQueue != nil {
+		h.persistQueuedImageJob(c, req, apiKey, http.StatusAccepted, false)
 		return
 	}
 	// Reserve the concurrency slot before accepting the job; see the same

@@ -37,6 +37,11 @@ func (h *Handler) RegisterExternalImageRoutes(r *gin.Engine, imageProxy *proxy.H
 }
 
 func (h *Handler) CreateExternalImageJob(c *gin.Context) {
+	releaseIntake, admitted := h.imageQueueIntake(c)
+	if !admitted {
+		return
+	}
+	defer releaseIntake()
 	var req imageGenerationJobPayload
 	if err := c.ShouldBindBodyWithJSON(&req); err != nil {
 		writeExternalImageError(c, http.StatusBadRequest, "Invalid request: body must be valid JSON")
@@ -72,6 +77,15 @@ func (h *Handler) CreateExternalImageJob(c *gin.Context) {
 		}
 		writeExternalImageError(c, http.StatusBadRequest, message)
 	}) {
+		return
+	}
+
+	if h.imageQueue != nil {
+		if status, msg := imageProxy.EnforceAPIKeyLimitsForRequests(c, req.Model, req.N); status != 0 {
+			proxy.SendAPIKeyLimitError(c, status, msg)
+			return
+		}
+		h.persistQueuedImageJob(c, req, apiKey, http.StatusAccepted, true)
 		return
 	}
 
@@ -300,26 +314,34 @@ func validateExternalInputImageDataURL(value string) error {
 }
 
 func fetchExternalInputImageAsDataURL(ctx context.Context, raw string) (string, error) {
+	data, mediaType, err := fetchExternalInputImageBytes(ctx, raw)
+	if err != nil {
+		return "", err
+	}
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+func fetchExternalInputImageBytes(ctx context.Context, raw string) ([]byte, string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed == nil || parsed.Host == "" {
-		return "", fmt.Errorf("input_images contains invalid URL")
+		return nil, "", fmt.Errorf("input_images contains invalid URL")
 	}
 	if parsed.User != nil {
-		return "", fmt.Errorf("input_images URL userinfo is not allowed")
+		return nil, "", fmt.Errorf("input_images URL userinfo is not allowed")
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	if scheme != "http" && scheme != "https" {
-		return "", fmt.Errorf("input_images URL scheme must be http, https, or data:image")
+		return nil, "", fmt.Errorf("input_images URL scheme must be http, https, or data:image")
 	}
 	if parsed.Hostname() == "" || strings.EqualFold(parsed.Hostname(), "localhost") {
-		return "", fmt.Errorf("input_images URL host is not allowed")
+		return nil, "", fmt.Errorf("input_images URL host is not allowed")
 	}
 
 	fetchCtx, cancel := context.WithTimeout(ctx, externalInputImageFetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return "", fmt.Errorf("input_images contains invalid URL")
+		return nil, "", fmt.Errorf("input_images contains invalid URL")
 	}
 	req.Header.Set("Accept", "image/*")
 	client := &http.Client{
@@ -329,42 +351,42 @@ func fetchExternalInputImageAsDataURL(ctx context.Context, raw string) (string, 
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("input_images URL cannot be fetched safely")
+		return nil, "", fmt.Errorf("input_images URL cannot be fetched safely")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		return "", fmt.Errorf("input_images URL redirects are not allowed")
+		return nil, "", fmt.Errorf("input_images URL redirects are not allowed")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("input_images URL returned HTTP %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("input_images URL returned HTTP %d", resp.StatusCode)
 	}
 	if resp.ContentLength > externalInputImageMaxBytes {
-		return "", fmt.Errorf("input_images URL image is too large")
+		return nil, "", fmt.Errorf("input_images URL image is too large")
 	}
 
 	contentType := resp.Header.Get("Content-Type")
 	mediaType, _, _ := mime.ParseMediaType(contentType)
 	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
 	if mediaType != "" && !strings.HasPrefix(mediaType, "image/") {
-		return "", fmt.Errorf("input_images URL content type must be an image")
+		return nil, "", fmt.Errorf("input_images URL content type must be an image")
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, externalInputImageMaxBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("input_images URL image could not be read")
+		return nil, "", fmt.Errorf("input_images URL image could not be read")
 	}
 	if len(data) == 0 {
-		return "", fmt.Errorf("input_images URL image data is empty")
+		return nil, "", fmt.Errorf("input_images URL image data is empty")
 	}
 	if len(data) > externalInputImageMaxBytes {
-		return "", fmt.Errorf("input_images URL image is too large")
+		return nil, "", fmt.Errorf("input_images URL image is too large")
 	}
 	if mediaType == "" {
 		mediaType = strings.ToLower(http.DetectContentType(data))
 	}
 	if !strings.HasPrefix(mediaType, "image/") {
-		return "", fmt.Errorf("input_images URL content type must be an image")
+		return nil, "", fmt.Errorf("input_images URL content type must be an image")
 	}
-	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+	return data, mediaType, nil
 }
 
 func rejectExternalInputImageRedirect(req *http.Request, via []*http.Request) error {
