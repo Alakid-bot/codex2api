@@ -105,7 +105,7 @@ func (db *DB) ListImageJobSummaries(ctx context.Context, page, pageSize int, key
 }
 
 func (db *DB) ExpiredImageAssets(ctx context.Context, cutoff time.Time, after int64, limit int) ([]ImageAsset, error) {
-	rows, err := db.conn.QueryContext(ctx, imageAssetSelectSQL("a")+` JOIN image_generation_jobs j ON j.id=a.job_id WHERE a.created_at<$1 AND a.id>$2 AND j.status IN ('succeeded','failed') ORDER BY a.id LIMIT $3`, cutoff, after, limit)
+	rows, err := db.conn.QueryContext(ctx, imageAssetSelectSQL("a")+` JOIN image_generation_jobs j ON j.id=a.job_id WHERE a.created_at<$1 AND a.id>$2 AND j.status IN ('succeeded','failed') ORDER BY a.id LIMIT $3`, db.imageRetentionCutoff(cutoff), after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +114,7 @@ func (db *DB) ExpiredImageAssets(ctx context.Context, cutoff time.Time, after in
 }
 
 func (db *DB) DeleteExpiredImageJobs(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
-	r, err := db.conn.ExecContext(ctx, `DELETE FROM image_generation_jobs WHERE id IN (SELECT j.id FROM image_generation_jobs j WHERE j.status IN ('succeeded','failed') AND COALESCE(j.completed_at,j.created_at)<$1 AND NOT EXISTS (SELECT 1 FROM image_assets a WHERE a.job_id=j.id) ORDER BY j.id LIMIT $2)`, cutoff, limit)
+	r, err := db.conn.ExecContext(ctx, `DELETE FROM image_generation_jobs WHERE id IN (SELECT j.id FROM image_generation_jobs j WHERE j.status IN ('succeeded','failed') AND COALESCE(j.completed_at,j.created_at)<$1 AND NOT EXISTS (SELECT 1 FROM image_assets a WHERE a.job_id=j.id) ORDER BY j.id LIMIT $2)`, db.imageRetentionCutoff(cutoff), limit)
 	if err != nil {
 		return 0, err
 	}
@@ -153,7 +153,7 @@ func (db *DB) ActiveImageQueueInputs(ctx context.Context) (map[string]bool, erro
 func (db *DB) PruneExpiredImageInputs(ctx context.Context, cutoff time.Time, after int64) (int64, error) {
 	var id int64
 	var raw string
-	err := db.conn.QueryRowContext(ctx, `SELECT id,params_json FROM image_generation_jobs WHERE id>$1 AND status IN ('succeeded','failed') AND COALESCE(completed_at,created_at)<$2 AND (params_json LIKE '%;base64,%' OR params_json LIKE '%queue-input:%') ORDER BY id LIMIT 1`, after, cutoff).Scan(&id, &raw)
+	err := db.conn.QueryRowContext(ctx, `SELECT id,params_json FROM image_generation_jobs WHERE id>$1 AND status IN ('succeeded','failed') AND COALESCE(completed_at,created_at)<$2 AND (params_json LIKE '%;base64,%' OR params_json LIKE '%queue-input:%') ORDER BY id LIMIT 1`, after, db.imageRetentionCutoff(cutoff)).Scan(&id, &raw)
 	if err != nil {
 		return 0, err
 	}
@@ -168,4 +168,11 @@ func (db *DB) PruneExpiredImageInputs(ctx context.Context, cutoff time.Time, aft
 	}
 	_, err = db.conn.ExecContext(ctx, `UPDATE image_generation_jobs SET params_json=$1 WHERE id=$2 AND status IN ('succeeded','failed')`, string(b), id)
 	return id, err
+}
+
+func (db *DB) imageRetentionCutoff(t time.Time) any {
+	if db.isSQLite() {
+		return t.UTC().Format("2006-01-02 15:04:05")
+	}
+	return t.UTC()
 }
