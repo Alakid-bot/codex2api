@@ -70,6 +70,8 @@ type RuntimeSettings struct {
 	CodexMinCLIVersion    string
 	CodexUserAgentConfig  string
 	CodexTelemetryEnabled bool
+	// CodexTurnStateTemplateCache enables X-Codex-Turn-State 292 template cache (experimental, default false).
+	CodexTurnStateTemplateCache bool
 	// CodexTelemetryTimingDebug 打开模拟遥测的临时计时探针（仅打日志，默认关闭）。
 	CodexTelemetryTimingDebug bool
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
@@ -178,6 +180,7 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		CodexMinCLIVersion:               defaultCodexMinCLIVersion,
 		CodexUserAgentConfig:             DefaultCodexUserAgentConfigJSON(),
 		CodexTelemetryEnabled:            false,
+		CodexTurnStateTemplateCache:      false,
 		CodexTelemetryTimingDebug:        false,
 		StreamFlushPolicy:                defaultStreamFlushPolicy,
 		StreamFlushIntervalMS:            defaultStreamFlushIntervalMS,
@@ -344,6 +347,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexMinCLIVersion = settings.CodexMinCLIVersion
 		next.CodexUserAgentConfig = settings.CodexUserAgentConfig
 		next.CodexTelemetryEnabled = settings.CodexTelemetryEnabled
+		next.CodexTurnStateTemplateCache = settings.CodexTurnStateTemplateCacheEnabled
 		next.CodexTelemetryTimingDebug = settings.CodexTelemetryTimingDebug
 		next.CodexImagesMainModel = settings.CodexImagesMainModel
 		next.StreamFlushPolicy = settings.StreamFlushPolicy

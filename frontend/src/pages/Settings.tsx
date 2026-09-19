@@ -2146,6 +2146,7 @@ export default function Settings() {
       ...cacheNormalized,
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
+      codex_turn_state_template_cache_enabled: cacheNormalized.codex_turn_state_template_cache_enabled ?? false,
       codex_telemetry_timing_debug: cacheNormalized.codex_telemetry_timing_debug ?? false,
       billing_tier_policy: normalizeBillingTierPolicyValue(cacheNormalized.billing_tier_policy),
       first_token_mode: 'loose',
@@ -2199,6 +2200,7 @@ export default function Settings() {
     auto_activate_5h_window_enabled: false,
     codex_force_websocket: false,
     codex_telemetry_enabled: false,
+    codex_turn_state_template_cache_enabled: false,
     codex_telemetry_timing_debug: false,
     codex_request_compression: true,
     codex_ws_weak_network_mode: false,
@@ -4053,6 +4055,15 @@ export default function Settings() {
                           <span className="font-mono text-xs text-muted-foreground">{syncedCliVersion}</span>
                         )}
                       </div>
+                    </SettingField>
+                    <SettingField
+                      label={t('settings.codexTurnStateTemplateCache')}
+                      description={t('settings.codexTurnStateTemplateCacheDesc')}
+                    >
+                      <Switch
+                        checked={settingsForm.codex_turn_state_template_cache_enabled}
+                        onCheckedChange={(checked) => autoSaveBooleanField('codex_turn_state_template_cache_enabled', checked)}
+                      />
                     </SettingField>
                     <SettingField
                       label={t('settings.codexTelemetry')}

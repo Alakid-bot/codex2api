@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"sync"
@@ -125,6 +126,49 @@ func guardCodexTurnStateEcho(affinityKey string, account *auth.Account, headers 
 	if origin.accountID != account.ID() {
 		headers.Del(codexTurnStateHeader)
 	}
+}
+
+
+type codexTurnStateAffinityContextKey struct{}
+
+// WithCodexTurnStateAffinityKey attaches the session affinity key used by
+// turn-state echo guarding so WebSocket executors can read it from ctx.
+func WithCodexTurnStateAffinityKey(ctx context.Context, affinityKey string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, codexTurnStateAffinityContextKey{}, strings.TrimSpace(affinityKey))
+}
+
+// CodexTurnStateAffinityKeyFromContext returns the affinity key set by
+// WithCodexTurnStateAffinityKey, or "" when absent.
+func CodexTurnStateAffinityKeyFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v, _ := ctx.Value(codexTurnStateAffinityContextKey{}).(string)
+	return v
+}
+
+// GuardCodexTurnStateEcho strips client-echoed turn-state known to have been
+// minted by a different account for this session. Safe no-op when affinityKey
+// is empty or provenance is missing. Call before ApplyCodexTurnStateTemplate.
+func GuardCodexTurnStateEcho(affinityKey string, account *auth.Account, headers http.Header) {
+	guardCodexTurnStateEcho(affinityKey, account, headers)
+}
+
+// NoteCodexTurnStateProvenance records which account minted turn-state for
+// affinityKey. Exported so WS-path tests can seed provenance.
+func NoteCodexTurnStateProvenance(affinityKey string, account *auth.Account) {
+	noteCodexTurnStateProvenance(affinityKey, account)
+}
+
+// ClearCodexTurnStateProvenance removes a provenance entry (tests / cleanup).
+func ClearCodexTurnStateProvenance(affinityKey string) {
+	if strings.TrimSpace(affinityKey) == "" {
+		return
+	}
+	codexTurnStateOrigins.Delete(affinityKey)
 }
 
 func noteCodexTurnStateProvenance(affinityKey string, account *auth.Account) {

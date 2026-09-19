@@ -1054,6 +1054,34 @@ function UserAgentCell({ log, mobile = false }: { log: UsageLog; mobile?: boolea
 
 // New usage rows resolve by immutable incident ID. Only historical rows without
 // an ID fall back to the legacy nearest-timestamp inference endpoint.
+function TurnStateCell({ log }: { log: UsageLog }) {
+  const { t } = useTranslation()
+  const note = log.turn_state_rewrite_note?.trim() || ''
+  const overridden = Boolean(log.turn_state_overridden)
+  if (!note && !overridden) {
+    return null
+  }
+  const label = overridden
+    ? (note || t('usage.turnStateOverridden'))
+    : (note === 'pass' ? t('usage.turnStatePreserved') : (note || t('usage.turnStatePreserved')))
+  return (
+    <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[11px] leading-relaxed" title={t('usage.turnStateLabel')}>
+      <span className="shrink-0 font-sans font-semibold text-muted-foreground">TS</span>
+      <Badge
+        variant="outline"
+        className={`shrink-0 border-transparent px-1.5 py-0 text-[10px] font-semibold ${
+          overridden
+            ? 'bg-amber-500/12 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+            : 'bg-emerald-500/12 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+        }`}
+      >
+        {label}
+      </Badge>
+    </div>
+  )
+}
+
+
 function CyberPolicyDetailButton({ log }: { log: UsageLog }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
@@ -2578,7 +2606,7 @@ export default function Usage() {
                           )}
                           {visibleColumns.userAgent && (
                             <div className="border-t border-border/60 pt-2">
-                              <UserAgentCell log={log} mobile />
+                              <div><UserAgentCell log={log} mobile /><TurnStateCell log={log} /></div>
                             </div>
                           )}
                         </div>
@@ -2791,7 +2819,7 @@ export default function Usage() {
                           </span>
                         </TableCell>}
                         {visibleColumns.userAgent && <TableCell>
-                          <UserAgentCell log={log} />
+                          <div><UserAgentCell log={log} /><TurnStateCell log={log} /></div>
                         </TableCell>}
                         {visibleColumns.endpoint && <TableCell>
                           <div

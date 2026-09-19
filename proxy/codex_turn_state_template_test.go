@@ -1,14 +1,18 @@
 package proxy
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
+	"github.com/gin-gonic/gin"
 )
 
 func fakeTurnState(n int, seed byte) string {
@@ -31,7 +35,10 @@ func fakeFernetTurnState(n int, ts time.Time) string {
 
 func enableTurnStateTemplateCache(t *testing.T) {
 	t.Helper()
-	t.Setenv("CODEX_TURN_STATE_TEMPLATE_CACHE", "true")
+	prev := CurrentRuntimeSettings()
+	next := prev
+	next.CodexTurnStateTemplateCache = true
+	ApplyRuntimeSettings(next)
 	t.Setenv("CODEX_TURN_STATE_TEMPLATE_LENGTH", "292")
 	t.Setenv("CODEX_TURN_STATE_REPLACE_LENGTH", "312")
 	t.Setenv("CODEX_TURN_STATE_INJECT_MODE", "replace-only")
@@ -41,6 +48,7 @@ func enableTurnStateTemplateCache(t *testing.T) {
 	t.Setenv("CODEX_TURN_STATE_MAX_ENTRIES", "8")
 	resetTurnStateTemplateStoreForTest()
 	t.Cleanup(func() {
+		ApplyRuntimeSettings(prev)
 		resetTurnStateTemplateStoreForTest()
 		setTurnStateTemplateNowForTest(nil)
 	})
@@ -152,7 +160,7 @@ func TestApplyCodexTurnStateTemplateReplaceOnlyAndAlways(t *testing.T) {
 	// replace-only + inbound 312 → substitute
 	out := http.Header{}
 	out.Set(codexTurnStateHeader, fakeTurnState(312, 'D'))
-	ApplyCodexTurnStateTemplate(out, acc, model)
+	ApplyCodexTurnStateTemplate(nil, out, acc, model)
 	if got := out.Get(codexTurnStateHeader); got != tmpl {
 		t.Fatalf("substitute: got len=%d want template", len(got))
 	}
@@ -162,7 +170,7 @@ func TestApplyCodexTurnStateTemplateReplaceOnlyAndAlways(t *testing.T) {
 
 	// replace-only + empty → pass
 	empty := http.Header{}
-	ApplyCodexTurnStateTemplate(empty, acc, model)
+	ApplyCodexTurnStateTemplate(nil, empty, acc, model)
 	if got := empty.Get(codexTurnStateHeader); got != "" {
 		t.Fatalf("replace-only must not inject into empty, got len=%d", len(got))
 	}
@@ -170,7 +178,7 @@ func TestApplyCodexTurnStateTemplateReplaceOnlyAndAlways(t *testing.T) {
 	// replace-only + already 292 (different) → pass (not replace_length)
 	other292 := http.Header{}
 	other292.Set(codexTurnStateHeader, fakeTurnState(292, 'O'))
-	ApplyCodexTurnStateTemplate(other292, acc, model)
+	ApplyCodexTurnStateTemplate(nil, other292, acc, model)
 	if got := other292.Get(codexTurnStateHeader); got != fakeTurnState(292, 'O') {
 		t.Fatal("replace-only must leave non-312 inbound alone")
 	}
@@ -178,7 +186,7 @@ func TestApplyCodexTurnStateTemplateReplaceOnlyAndAlways(t *testing.T) {
 	// always + empty → inject
 	t.Setenv("CODEX_TURN_STATE_INJECT_MODE", "always")
 	alwaysEmpty := http.Header{}
-	ApplyCodexTurnStateTemplate(alwaysEmpty, acc, model)
+	ApplyCodexTurnStateTemplate(nil, alwaysEmpty, acc, model)
 	if got := alwaysEmpty.Get(codexTurnStateHeader); got != tmpl {
 		t.Fatalf("always inject: got len=%d", len(got))
 	}
@@ -186,7 +194,7 @@ func TestApplyCodexTurnStateTemplateReplaceOnlyAndAlways(t *testing.T) {
 	// always + 312 → inject
 	alwaysDeg := http.Header{}
 	alwaysDeg.Set(codexTurnStateHeader, fakeTurnState(312, 'Z'))
-	ApplyCodexTurnStateTemplate(alwaysDeg, acc, model)
+	ApplyCodexTurnStateTemplate(nil, alwaysDeg, acc, model)
 	if got := alwaysDeg.Get(codexTurnStateHeader); got != tmpl {
 		t.Fatalf("always on 312: got len=%d", len(got))
 	}
@@ -205,16 +213,18 @@ func TestApplyCodexTurnStateTemplateDryRunAndDisabled(t *testing.T) {
 	out := http.Header{}
 	degraded := fakeTurnState(312, 'D')
 	out.Set(codexTurnStateHeader, degraded)
-	ApplyCodexTurnStateTemplate(out, acc, model)
+	ApplyCodexTurnStateTemplate(nil, out, acc, model)
 	if got := out.Get(codexTurnStateHeader); got != degraded {
 		t.Fatal("dry-run must not mutate headers")
 	}
 
 	t.Setenv("CODEX_TURN_STATE_DRY_RUN", "false")
-	t.Setenv("CODEX_TURN_STATE_TEMPLATE_CACHE", "false")
+	off := CurrentRuntimeSettings()
+	off.CodexTurnStateTemplateCache = false
+	ApplyRuntimeSettings(off)
 	out2 := http.Header{}
 	out2.Set(codexTurnStateHeader, degraded)
-	ApplyCodexTurnStateTemplate(out2, acc, model)
+	ApplyCodexTurnStateTemplate(nil, out2, acc, model)
 	if got := out2.Get(codexTurnStateHeader); got != degraded {
 		t.Fatal("feature-off must not mutate headers")
 	}
@@ -242,14 +252,14 @@ func TestGuardThenApplyReplaceOnlyLeavesStrippedEmpty(t *testing.T) {
 		t.Fatalf("guard should strip foreign echo, got len=%d", len(got))
 	}
 	// replace-only: stripped empty must stay empty
-	ApplyCodexTurnStateTemplate(echo, other, model)
+	ApplyCodexTurnStateTemplate(nil, echo, other, model)
 	if got := echo.Get(codexTurnStateHeader); got != "" {
 		t.Fatalf("replace-only after strip must not reinject, got len=%d", len(got))
 	}
 
 	// always: may inject current account template
 	t.Setenv("CODEX_TURN_STATE_INJECT_MODE", "always")
-	ApplyCodexTurnStateTemplate(echo, other, model)
+	ApplyCodexTurnStateTemplate(nil, echo, other, model)
 	if got := echo.Get(codexTurnStateHeader); got != tmpl {
 		t.Fatalf("always after strip should inject current tmpl, got len=%d", len(got))
 	}
@@ -298,8 +308,83 @@ func TestApplyCodexTurnStateTemplateSkipsRelayAccounts(t *testing.T) {
 	}
 	out := http.Header{}
 	out.Set(codexTurnStateHeader, fakeTurnState(312, 'D'))
-	ApplyCodexTurnStateTemplate(out, relay, model)
+	ApplyCodexTurnStateTemplate(nil, out, relay, model)
 	if got := out.Get(codexTurnStateHeader); len(got) != 312 {
 		t.Fatal("relay accounts must not apply templates")
+	}
+}
+
+func TestCaptureRejectsUnusableWithoutEvictingFullCache(t *testing.T) {
+	enableTurnStateTemplateCache(t)
+	t.Setenv("CODEX_TURN_STATE_MAX_ENTRIES", "2")
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	setTurnStateTemplateNowForTest(func() time.Time { return now })
+
+	for i, seed := range []byte{'a', 'b'} {
+		acc := &auth.Account{DBID: int64(i + 1)}
+		h := http.Header{}
+		h.Set(codexTurnStateHeader, fakeTurnState(292, seed))
+		CaptureCodexTurnStateTemplate(acc, "gpt-5.4", h)
+	}
+	if globalTurnStateTemplates.lenForTest() != 2 {
+		t.Fatalf("want 2 live entries, got %d", globalTurnStateTemplates.lenForTest())
+	}
+
+	expired := fakeFernetTurnState(292, now.Add(-2*time.Hour))
+	h := http.Header{}
+	h.Set(codexTurnStateHeader, expired)
+	CaptureCodexTurnStateTemplate(&auth.Account{DBID: 99}, "gpt-5.4", h)
+	if globalTurnStateTemplates.lenForTest() != 2 {
+		t.Fatalf("expired 292 capture must not shrink cache, got %d", globalTurnStateTemplates.lenForTest())
+	}
+
+	future := fakeFernetTurnState(292, now.Add(time.Hour))
+	h2 := http.Header{}
+	h2.Set(codexTurnStateHeader, future)
+	CaptureCodexTurnStateTemplate(&auth.Account{DBID: 100}, "gpt-5.4", h2)
+	if globalTurnStateTemplates.lenForTest() != 2 {
+		t.Fatalf("future-issued 292 capture must not shrink cache, got %d", globalTurnStateTemplates.lenForTest())
+	}
+
+	cfg := loadTurnStateTemplateConfig()
+	if _, ok := globalTurnStateTemplates.lookup(cfg, 1, "gpt-5.4"); !ok {
+		t.Fatal("account=1 should remain after rejected captures")
+	}
+	if _, ok := globalTurnStateTemplates.lookup(cfg, 2, "gpt-5.4"); !ok {
+		t.Fatal("account=2 should remain after rejected captures")
+	}
+}
+
+func TestTurnStateTemplateAuditRecordsRewriteNote(t *testing.T) {
+	enableTurnStateTemplateCache(t)
+	acc := &auth.Account{DBID: 7}
+	model := "gpt-5.4"
+	tmpl := fakeTurnState(292, 'T')
+	hCap := http.Header{}
+	hCap.Set(codexTurnStateHeader, tmpl)
+	CaptureCodexTurnStateTemplate(acc, model, hCap)
+
+	ctx := withTurnStateTemplateAudit(context.Background())
+	out := http.Header{}
+	out.Set(codexTurnStateHeader, fakeTurnState(312, 'D'))
+	ApplyCodexTurnStateTemplate(ctx, out, acc, model)
+	if got := out.Get(codexTurnStateHeader); got != tmpl {
+		t.Fatalf("expected substitute, got len=%d", len(got))
+	}
+
+	input := &database.UsageLogInput{}
+	// Simulate populate without gin by reading audit directly.
+	audit := turnStateTemplateAuditFromContext(ctx)
+	if audit == nil || !audit.recorded || !audit.rewritten || audit.decision != "substitute" {
+		t.Fatalf("audit = %+v", audit)
+	}
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	req, _ := http.NewRequest(http.MethodPost, "/", nil)
+	c.Request = req.WithContext(ctx)
+	populateTurnStateTemplateMetaFromRequest(c, input)
+	if !input.TurnStateOverridden || input.TurnStateRewriteNote != "312→292" {
+		t.Fatalf("usage meta = overridden=%v note=%q", input.TurnStateOverridden, input.TurnStateRewriteNote)
 	}
 }

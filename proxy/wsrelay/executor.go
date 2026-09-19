@@ -143,8 +143,11 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	wsURL = egress.URL
 
 	// 准备请求头
-	headers := e.prepareWebsocketHeaders(accessToken, account, accountIDStr, headerSessionID, apiKey, deviceCfg, ginHeaders, wsBody)
-	// 凭据级 turn state 注入在账号自定义头之后落定（帧体已由 proxy.ExecuteRequest 写入）。
+	// Outbound turn-state order (WS handshake): Guard foreign echo → auto
+	// template Apply (if setting on) → manual credential inject last (ops override).
+	affinityKey := proxy.CodexTurnStateAffinityKeyFromContext(ctx)
+	headers := e.prepareWebsocketHeaders(ctx, accessToken, account, accountIDStr, headerSessionID, apiKey, deviceCfg, ginHeaders, wsBody, affinityKey)
+	// 凭据级 turn state 注入在 Guard/模板 Apply 与账号自定义头之后落定（帧体已由 proxy.ExecuteRequest 写入）。
 	proxy.ApplyCodexTurnStateInjectionHeader(ctx, headers)
 	// Record the attempted handshake UA immediately so failed handshakes are
 	// still auditable. A reused connection replaces this below with the UA that
@@ -315,8 +318,9 @@ func (e *Executor) prepareWebsocketBody(body []byte, sessionID string) []byte {
 	return wsBody
 }
 
-// prepareWebsocketHeaders 准备 WebSocket 请求头
-func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Account, accountID, sessionID, apiKey string, deviceCfg *proxy.DeviceProfileConfig, ginHeaders http.Header, wsBody []byte) http.Header {
+// prepareWebsocketHeaders 准备 WebSocket 请求头。
+// affinityKey 用于 turn-state 跨账号回声守卫；空串时守卫为空操作。
+func (e *Executor) prepareWebsocketHeaders(ctx context.Context, accessToken string, account *auth.Account, accountID, sessionID, apiKey string, deviceCfg *proxy.DeviceProfileConfig, ginHeaders http.Header, wsBody []byte, affinityKey string) http.Header {
 	headers := http.Header{}
 
 	// 认证头
@@ -366,8 +370,10 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 			headers.Set(name, value)
 		}
 	}
-	// 292 模板替换/注入：在透传 turn-state 之后、指纹收敛之前。
-	proxy.ApplyCodexTurnStateTemplate(headers, account, strings.TrimSpace(gjson.GetBytes(wsBody, "model").String()))
+	// 跨账号回声守卫必须在 292 模板替换/注入之前（与 HTTP handler 同序）。
+	proxy.GuardCodexTurnStateEcho(affinityKey, account, headers)
+	// 292 模板替换/注入：在透传+守卫之后、指纹收敛之前。
+	proxy.ApplyCodexTurnStateTemplate(ctx, headers, account, strings.TrimSpace(gjson.GetBytes(wsBody, "model").String()))
 	// 指纹收敛：在透传之后覆盖客户端原值，在账号自定义头之前保留运维覆盖优先级。
 	// 握手头是逐连接冻结的，复用连接沿用建连时的取值；收敛值按账号恒定，正好与
 	// 这一语义相容。off 档为空操作。

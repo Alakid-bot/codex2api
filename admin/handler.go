@@ -9296,6 +9296,7 @@ type settingsResponse struct {
 	CodexMinCLIVersion                 string                           `json:"codex_min_cli_version"`
 	CodexUserAgentConfig               string                           `json:"codex_user_agent_config"`
 	CodexTelemetryEnabled              bool                             `json:"codex_telemetry_enabled"`
+	CodexTurnStateTemplateCacheEnabled bool                             `json:"codex_turn_state_template_cache_enabled"`
 	CodexTelemetryTimingDebug          bool                             `json:"codex_telemetry_timing_debug"`
 	UsageLogMode                       string                           `json:"usage_log_mode"`
 	UsageLogBatchSize                  int                              `json:"usage_log_batch_size"`
@@ -9465,6 +9466,7 @@ type updateSettingsReq struct {
 	CodexMinCLIVersion                  *string                          `json:"codex_min_cli_version"`
 	CodexUserAgentConfig                *string                          `json:"codex_user_agent_config"`
 	CodexTelemetryEnabled               *bool                            `json:"codex_telemetry_enabled"`
+	CodexTurnStateTemplateCacheEnabled  *bool                            `json:"codex_turn_state_template_cache_enabled"`
 	CodexTelemetryTimingDebug           *bool                            `json:"codex_telemetry_timing_debug"`
 	UsageLogMode                        *string                          `json:"usage_log_mode"`
 	UsageLogBatchSize                   *int                             `json:"usage_log_batch_size"`
@@ -10302,6 +10304,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexMinCLIVersion:                  runtimeCfg.CodexMinCLIVersion,
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
+		CodexTurnStateTemplateCacheEnabled:  runtimeCfg.CodexTurnStateTemplateCache,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
 		UsageLogMode:                        h.db.GetUsageLogMode(),
 		UsageLogBatchSize:                   h.db.GetUsageLogBatchSize(),
@@ -11373,6 +11376,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.CodexTelemetryEnabled = *req.CodexTelemetryEnabled
 		log.Printf("设置已更新: codex_telemetry_enabled = %t", runtimeCfg.CodexTelemetryEnabled)
 	}
+	if req.CodexTurnStateTemplateCacheEnabled != nil {
+		runtimeCfg.CodexTurnStateTemplateCache = *req.CodexTurnStateTemplateCacheEnabled
+		log.Printf("设置已更新: codex_turn_state_template_cache_enabled = %t", runtimeCfg.CodexTurnStateTemplateCache)
+	}
 	if req.CodexTelemetryTimingDebug != nil {
 		runtimeCfg.CodexTelemetryTimingDebug = *req.CodexTelemetryTimingDebug
 		log.Printf("设置已更新: codex_telemetry_timing_debug = %t", runtimeCfg.CodexTelemetryTimingDebug)
@@ -11794,6 +11801,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexMinCLIVersion:                  runtimeCfg.CodexMinCLIVersion,
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
+		CodexTurnStateTemplateCacheEnabled:  runtimeCfg.CodexTurnStateTemplateCache,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,
@@ -12146,6 +12154,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexMinCLIVersion:                  runtimeCfg.CodexMinCLIVersion,
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
+		CodexTurnStateTemplateCacheEnabled:  runtimeCfg.CodexTurnStateTemplateCache,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,

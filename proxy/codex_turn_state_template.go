@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"log"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
+	"github.com/gin-gonic/gin"
 )
 
 // X-Codex-Turn-State length-292 template cache (v1).
@@ -45,8 +48,9 @@ type turnStateTemplateConfig struct {
 }
 
 func loadTurnStateTemplateConfig() turnStateTemplateConfig {
+	// Master switch is system settings (Codex experimental UI); env is no longer the primary toggle.
 	cfg := turnStateTemplateConfig{
-		Enabled:        parseTurnStateBoolEnv(os.Getenv("CODEX_TURN_STATE_TEMPLATE_CACHE")),
+		Enabled:        CurrentRuntimeSettings().CodexTurnStateTemplateCache,
 		TemplateLength: defaultTurnStateTemplateLength,
 		ReplaceLength:  defaultTurnStateReplaceLength,
 		InjectMode:     turnStateInjectReplaceOnly,
@@ -179,6 +183,11 @@ func (s *turnStateTemplateStore) capture(cfg turnStateTemplateConfig, accountID 
 	now := s.now()
 	if !ok {
 		issued = now
+	}
+	// Reject expired/future-issued templates before purge/eviction/store so a
+	// bad capture cannot shrink a full cache.
+	if !turnStateTemplateUsable(issued, now, cfg.TTL) {
+		return false
 	}
 	key := turnStateTemplateKey{AccountID: accountID, Model: model}
 
@@ -341,7 +350,8 @@ func injectTurnStateReason(value string, cfg turnStateTemplateConfig) string {
 // ApplyCodexTurnStateTemplate rewrites outbound X-Codex-Turn-State from the
 // selected account's cached template. Call AFTER guardCodexTurnStateEcho.
 // Clear then Set to avoid duplicate casings. Never logs the state value.
-func ApplyCodexTurnStateTemplate(headers http.Header, account *auth.Account, model string) {
+// ctx carries usage-log audit (turn-state decision/lengths); nil ctx skips audit.
+func ApplyCodexTurnStateTemplate(ctx context.Context, headers http.Header, account *auth.Account, model string) {
 	cfg := loadTurnStateTemplateConfig()
 	if !cfg.Enabled || headers == nil || !accountEligibleForTurnStateTemplate(account) {
 		return
@@ -353,12 +363,18 @@ func ApplyCodexTurnStateTemplate(headers http.Header, account *auth.Account, mod
 	inbound := strings.TrimSpace(headers.Get(codexTurnStateHeader))
 	tmpl, ok := globalTurnStateTemplates.lookup(cfg, account.ID(), model)
 	decision, reason, replacement := decideCodexTurnStateHeader(cfg, inbound, tmpl, ok)
-	logTurnStateTemplateDecision(cfg, decision, account.ID(), model, len(inbound), reason)
-	if replacement == "" || cfg.DryRun {
-		return
+	outboundLen := len(inbound)
+	rewritten := false
+	if replacement != "" && !cfg.DryRun {
+		headers.Del(codexTurnStateHeader)
+		headers.Set(codexTurnStateHeader, replacement)
+		outboundLen = len(replacement)
+		rewritten = decision == "substitute" || decision == "inject"
+	} else if replacement != "" && cfg.DryRun {
+		outboundLen = len(replacement)
 	}
-	headers.Del(codexTurnStateHeader)
-	headers.Set(codexTurnStateHeader, replacement)
+	recordTurnStateTemplateAudit(ctx, decision, len(inbound), outboundLen, rewritten)
+	logTurnStateTemplateDecision(cfg, decision, account.ID(), model, len(inbound), reason)
 }
 
 func logTurnStateTemplateDecision(cfg turnStateTemplateConfig, decision string, accountID int64, model string, length int, reason string) {
@@ -366,5 +382,91 @@ func logTurnStateTemplateDecision(cfg turnStateTemplateConfig, decision string, 
 		return
 	}
 	// NEVER log the state value — decision + account id + model + lengths only.
-	log.Printf("[codex-turn-state] %s account=%d model=%s len=%d (%s)", decision, accountID, model, length, reason)
+	log.Printf("[codex-turn-state] %s account=%d model=%q len=%d (%s)", decision, accountID, model, length, reason)
 }
+
+// ==================== usage-log turn-state audit ====================
+
+type turnStateTemplateAuditContextKey struct{}
+
+type turnStateTemplateAudit struct {
+	mu          sync.Mutex
+	decision    string
+	inboundLen  int
+	outboundLen int
+	rewritten   bool
+	recorded    bool
+}
+
+func withTurnStateTemplateAudit(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if turnStateTemplateAuditFromContext(ctx) != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, turnStateTemplateAuditContextKey{}, &turnStateTemplateAudit{})
+}
+
+func turnStateTemplateAuditFromContext(ctx context.Context) *turnStateTemplateAudit {
+	if ctx == nil {
+		return nil
+	}
+	audit, _ := ctx.Value(turnStateTemplateAuditContextKey{}).(*turnStateTemplateAudit)
+	return audit
+}
+
+func attachTurnStateTemplateAudit(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	c.Request = c.Request.WithContext(withTurnStateTemplateAudit(c.Request.Context()))
+}
+
+func recordTurnStateTemplateAudit(ctx context.Context, decision string, inboundLen, outboundLen int, rewritten bool) {
+	audit := turnStateTemplateAuditFromContext(ctx)
+	if audit == nil {
+		return
+	}
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	audit.decision = decision
+	audit.inboundLen = inboundLen
+	audit.outboundLen = outboundLen
+	audit.rewritten = rewritten
+	audit.recorded = true
+}
+
+func populateTurnStateTemplateMetaFromRequest(c *gin.Context, input *database.UsageLogInput) {
+	if c == nil || c.Request == nil || input == nil {
+		return
+	}
+	audit := turnStateTemplateAuditFromContext(c.Request.Context())
+	if audit == nil {
+		return
+	}
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	if !audit.recorded {
+		return
+	}
+	// Only annotate when a rewrite was decided (substitute/inject). Pass stays blank
+	// so the Usage table mirrors UA: silence unless something changed.
+	if audit.decision != "substitute" && audit.decision != "inject" {
+		return
+	}
+	input.TurnStateOverridden = audit.rewritten
+	note := ""
+	switch audit.decision {
+	case "substitute":
+		note = strconv.Itoa(audit.inboundLen) + "→" + strconv.Itoa(audit.outboundLen)
+	case "inject":
+		if audit.inboundLen == 0 {
+			note = "inject"
+		} else {
+			note = "inject " + strconv.Itoa(audit.inboundLen) + "→" + strconv.Itoa(audit.outboundLen)
+		}
+	}
+	input.TurnStateRewriteNote = note
+}
+

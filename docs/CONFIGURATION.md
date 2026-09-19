@@ -75,14 +75,14 @@ Codex2API 采用三层配置架构：
 | `CODEX_TRANSPORT_MODE` | 否 | `standard` | Codex HTTP transport：默认标准 Go TLS；`utls_chrome` 可回滚旧 Chrome uTLS 行为 |
 | `CODEX_WS_SEND_USER_AGENT` | 否 | `true` | WS 握手是否发送 Codex `User-Agent`/`Version`；设为 `false` 可关闭 |
 | `CODEX_SESSION_AFFINITY_TTL` | 否 | `1h` | Codex 会话到账号/代理的黏性 TTL，支持 `1h`、`90m` 或秒数 |
-| `CODEX_TURN_STATE_TEMPLATE_CACHE` | 否 | `false` | 开启 X-Codex-Turn-State 长度-292 模板缓存。按账号 DBID + 精确上游 model 缓存上游响应中的 292 模板，出站时把 312（降质）替换为缓存的 292。默认关闭；从不伪造、从不从客户端请求头采集、从不跨账号/跨模型 |
-| `CODEX_TURN_STATE_TEMPLATE_LENGTH` | 否 | `292` | 仅缓存该长度的模板值 |
-| `CODEX_TURN_STATE_REPLACE_LENGTH` | 否 | `312` | `replace-only` 模式下仅当入站头为此长度时才替换 |
-| `CODEX_TURN_STATE_INJECT_MODE` | 否 | `replace-only` | `replace-only`：只替换 312；`always`：有缓存模板时强制写入（含空头） |
-| `CODEX_TURN_STATE_TTL` | 否 | `1h` | 模板可用窗口；优先用 Fernet issuedAt，否则用采集时间 |
-| `CODEX_TURN_STATE_MAX_ENTRIES` | 否 | `256` | 进程内缓存条目上限，超出按最旧 issuedAt 淘汰 |
-| `CODEX_TURN_STATE_LOG_DECISIONS` | 否 | `false` | 记录 harvest/substitute/inject/pass 决策（仅 account/model/len，从不记录 state 值） |
-| `CODEX_TURN_STATE_DRY_RUN` | 否 | `false` | 只决策+打日志，不改写出站头 |
+| ~~`CODEX_TURN_STATE_TEMPLATE_CACHE`~~ | — | — | **已弃用**：主开关改到管理后台「Turn-State 292 模板缓存（实验性）」（`codex_turn_state_template_cache_enabled`，默认关闭） |
+| `CODEX_TURN_STATE_TEMPLATE_LENGTH` | 否 | `292` | （可选调参）仅缓存该长度的模板值；主开关在系统设置 |
+| `CODEX_TURN_STATE_REPLACE_LENGTH` | 否 | `312` | （可选调参）`replace-only` 模式下仅当入站头为此长度时才替换 |
+| `CODEX_TURN_STATE_INJECT_MODE` | 否 | `replace-only` | （可选调参）`replace-only`：只替换长度为 `CODEX_TURN_STATE_REPLACE_LENGTH`（默认 312）的入站头；`always`：有缓存模板时强制写入（含空头） |
+| `CODEX_TURN_STATE_TTL` | 否 | `1h` | （可选调参）模板可用窗口；优先用 Fernet issuedAt，否则用采集时间 |
+| `CODEX_TURN_STATE_MAX_ENTRIES` | 否 | `256` | （可选调参）进程内缓存条目上限，超出按最旧 issuedAt 淘汰 |
+| `CODEX_TURN_STATE_LOG_DECISIONS` | 否 | `false` | （可选调参）记录 harvest/substitute/inject/pass 决策（仅 account/model/len，从不记录 state 值） |
+| `CODEX_TURN_STATE_DRY_RUN` | 否 | `false` | （可选调参）只决策+打日志，不改写出站头 |
 | `CODEX_COMPACTION_AFFINITY_TTL` | 否 | `168h` | 加密压缩状态的来源亲和 TTL。缓存仅保存密文的 SHA-256 摘要、来源账号和兼容域；已知状态不会跨 Codex 官方、不同 Responses 中转或 Grok 上游流转 |
 | `CODEX_FINGERPRINT_DEBUG` | 否 | `false` | 输出脱敏指纹策略诊断日志，不记录 token |
 | `CODEX_REQUEST_COMPRESSION` | 否 | 跟随系统设置 | 覆盖系统设置「Codex HTTP 请求体压缩」。`zstd`/`on`/`true`/`1` 强制开启，`off`/`false`/`0` 强制关闭，未设置或取值无法识别时以系统设置为准。作为部署级逃生阀存在：DB 不可达或后台打不开时仍可整机切换 |

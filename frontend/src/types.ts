@@ -2052,6 +2052,7 @@ export interface SystemSettings {
   scheduler_engine: 'legacy' | 'shadow' | 'indexed'
   codex_force_websocket: boolean
   codex_telemetry_enabled: boolean
+  codex_turn_state_template_cache_enabled: boolean
   codex_telemetry_timing_debug: boolean
   codex_request_compression: boolean
   codex_ws_weak_network_mode: boolean
@@ -3436,6 +3437,8 @@ export interface UsageLog {
   client_user_agent: string
   upstream_user_agent: string
   user_agent_overridden: boolean
+  turn_state_overridden?: boolean
+  turn_state_rewrite_note?: string
   internal_reason: string
   parent_request_id: string
   endpoint: string
