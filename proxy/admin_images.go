@@ -14,22 +14,6 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// adminImageResponseRecorder 仅记录最终响应，避免 HTTP 102 保活锁定状态码。
-type adminImageResponseRecorder struct {
-	*httptest.ResponseRecorder
-}
-
-func newAdminImageResponseRecorder() *adminImageResponseRecorder {
-	return &adminImageResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
-}
-
-func (r *adminImageResponseRecorder) WriteHeader(code int) {
-	if code >= http.StatusContinue && code < http.StatusOK {
-		return
-	}
-	r.ResponseRecorder.WriteHeader(code)
-}
-
 // GenerateImageOnceForAdmin executes the existing Images API handler in-process.
 // It keeps model aliasing, account dispatch, usage logging, and image parsing in one code path.
 func (h *Handler) GenerateImageOnceForAdmin(ctx context.Context, rawBody []byte, apiKey *database.APIKeyRow, sharedAPIKeyConcurrency bool) ([]byte, int, error) {
