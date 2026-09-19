@@ -610,3 +610,84 @@ func TestEncodedLengthsMatchPolicy(t *testing.T) {
 		t.Fatalf("team lengths %d/%d", turnStateEncodedLength(12), turnStateEncodedLength(13))
 	}
 }
+
+
+func TestPurgeExpiredDoesNotDropOtherBlockPolicy(t *testing.T) {
+	enableTurnStateTeamMode(t)
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	setTurnStateTemplateNowForTest(func() time.Time { return now })
+
+	teamAcc := &auth.Account{DBID: 10, PlanType: "team"}
+	personalAcc := &auth.Account{DBID: 11, PlanType: "plus"}
+	teamModel := "gpt-5.4-team"
+	personalModel := "gpt-5.4-personal"
+
+	teamVal := syntheticTurnState(12, now, 'T')
+	hTeam := http.Header{}
+	hTeam.Set(codexTurnStateHeader, teamVal)
+	CaptureCodexTurnStateTemplate(nil, teamAcc, teamModel, hTeam)
+	if globalTurnStateTemplates.lenForTest() != 1 {
+		t.Fatalf("want team template stored, len=%d", globalTurnStateTemplates.lenForTest())
+	}
+
+	// Switch to personal without resetting the store.
+	next := CurrentRuntimeSettings()
+	next.CodexTurnStateAccountMode = CodexTurnStateAccountModePersonal
+	ApplyRuntimeSettings(next)
+
+	personalVal := syntheticTurnState(10, now, 'P')
+	hPers := http.Header{}
+	hPers.Set(codexTurnStateHeader, personalVal)
+	CaptureCodexTurnStateTemplate(nil, personalAcc, personalModel, hPers)
+	if globalTurnStateTemplates.lenForTest() != 2 {
+		t.Fatalf("personal capture must not purge valid team entry, len=%d", globalTurnStateTemplates.lenForTest())
+	}
+
+	cfg := loadTurnStateTemplateConfig()
+	pPers := cfg.policyFor(personalAcc)
+	if _, ok := globalTurnStateTemplates.lookup(cfg, pPers, personalAcc.ID(), personalModel); !ok {
+		t.Fatal("personal lookup failed")
+	}
+	if globalTurnStateTemplates.lenForTest() != 2 {
+		t.Fatalf("personal lookup purge must not drop team entry, len=%d", globalTurnStateTemplates.lenForTest())
+	}
+
+	// Reverse: team lookup must not drop personal.
+	next.CodexTurnStateAccountMode = CodexTurnStateAccountModeTeam
+	ApplyRuntimeSettings(next)
+	cfg = loadTurnStateTemplateConfig()
+	pTeam := cfg.policyFor(teamAcc)
+	got, ok := globalTurnStateTemplates.lookup(cfg, pTeam, teamAcc.ID(), teamModel)
+	if !ok || got != teamVal {
+		t.Fatalf("team lookup = %q ok=%v", got, ok)
+	}
+	if globalTurnStateTemplates.lenForTest() != 2 {
+		t.Fatalf("team lookup purge must not drop personal entry, len=%d", globalTurnStateTemplates.lenForTest())
+	}
+}
+
+func TestRecordTurnStateTemplateAuditPreservesSubstituteOverPass(t *testing.T) {
+	ctx := withTurnStateTemplateAudit(context.Background())
+	recordTurnStateTemplateAudit(ctx, "substitute", 312, 292, true)
+	recordTurnStateTemplateAudit(ctx, "pass", 0, 0, false)
+
+	audit := turnStateTemplateAuditFromContext(ctx)
+	if audit == nil {
+		t.Fatal("missing audit")
+	}
+	audit.mu.Lock()
+	decision, rewritten, inbound, outbound := audit.decision, audit.rewritten, audit.inboundLen, audit.outboundLen
+	audit.mu.Unlock()
+	if decision != "substitute" || !rewritten || inbound != 312 || outbound != 292 {
+		t.Fatalf("pass overwrote substitute: decision=%s rewritten=%v inbound=%d outbound=%d", decision, rewritten, inbound, outbound)
+	}
+
+	// A later inject/substitute may still update.
+	recordTurnStateTemplateAudit(ctx, "inject", 0, 292, true)
+	audit.mu.Lock()
+	decision, rewritten, outbound = audit.decision, audit.rewritten, audit.outboundLen
+	audit.mu.Unlock()
+	if decision != "inject" || !rewritten || outbound != 292 {
+		t.Fatalf("inject should update prior substitute: decision=%s rewritten=%v outbound=%d", decision, rewritten, outbound)
+	}
+}

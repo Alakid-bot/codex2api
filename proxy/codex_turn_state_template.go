@@ -227,16 +227,25 @@ func parseTurnStateToken(value string) (turnStateToken, error) {
 	}, nil
 }
 
-// Accept usable only if Blocks match, issued not >skew in the future, and
-// now is before issued+(TTL-skew). Matches sleep-state Policy.Accept.
-func turnStateTokenAccept(t turnStateToken, now time.Time, ttl time.Duration, expectedBlocks int) bool {
-	if t.Value == "" || t.Blocks != expectedBlocks {
+// turnStateTokenTimeValid checks issued/TTL skew only (no block-policy).
+// Used by global purge so personal lookups do not wipe team-length entries.
+func turnStateTokenTimeValid(t turnStateToken, now time.Time, ttl time.Duration) bool {
+	if t.Value == "" {
 		return false
 	}
 	if t.Issued.After(now.Add(turnStateAcceptSkew)) {
 		return false
 	}
 	return now.Before(t.Issued.Add(ttl - turnStateAcceptSkew))
+}
+
+// Accept usable only if Blocks match, issued not >skew in the future, and
+// now is before issued+(TTL-skew). Matches sleep-state Policy.Accept.
+func turnStateTokenAccept(t turnStateToken, now time.Time, ttl time.Duration, expectedBlocks int) bool {
+	if t.Blocks != expectedBlocks {
+		return false
+	}
+	return turnStateTokenTimeValid(t, now, ttl)
 }
 
 type turnStateTemplateKey struct {
@@ -307,7 +316,7 @@ func (s *turnStateTemplateStore) capture(cfg turnStateTemplateConfig, policy tur
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.purgeExpiredLocked(cfg, policy.TemplateBlocks, now)
+	s.purgeExpiredLocked(cfg, now)
 	if _, exists := s.entries[key]; !exists {
 		s.evictOldestLocked(cfg.MaxEntries)
 	}
@@ -328,7 +337,7 @@ func (s *turnStateTemplateStore) lookup(cfg turnStateTemplateConfig, policy turn
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
-	s.purgeExpiredLocked(cfg, policy.TemplateBlocks, now)
+	s.purgeExpiredLocked(cfg, now)
 	entry, ok := s.entries[key]
 	if !ok {
 		return "", false
@@ -397,10 +406,13 @@ func (s *turnStateTemplateStore) clearKey(accountID int64, model string) {
 	delete(s.entries, turnStateTemplateKey{AccountID: accountID, Model: strings.TrimSpace(model)})
 }
 
-func (s *turnStateTemplateStore) purgeExpiredLocked(cfg turnStateTemplateConfig, templateBlocks int, now time.Time) {
+func (s *turnStateTemplateStore) purgeExpiredLocked(cfg turnStateTemplateConfig, now time.Time) {
 	for key, entry := range s.entries {
 		tok, err := parseTurnStateToken(entry.Value)
-		if err != nil || !turnStateTokenAccept(tok, now, cfg.TTL, templateBlocks) {
+		// Drop only on parse failure or timestamp/TTL invalidity. Block-policy
+		// mismatches stay for lookup/capture/strike — a personal caller must not
+		// purge a valid team-length template (and vice versa).
+		if err != nil || !turnStateTokenTimeValid(tok, now, cfg.TTL) {
 			delete(s.entries, key)
 		}
 	}
@@ -598,6 +610,16 @@ func withTurnStateTemplateAudit(ctx context.Context) context.Context {
 	return context.WithValue(ctx, turnStateTemplateAuditContextKey{}, &turnStateTemplateAudit{})
 }
 
+// replaceTurnStateTemplateAudit always installs a fresh audit slot. Use at the
+// start of each Responses WebSocket turn so multi-turn reuse of the same
+// request context cannot inherit a prior turn's override metadata.
+func replaceTurnStateTemplateAudit(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, turnStateTemplateAuditContextKey{}, &turnStateTemplateAudit{})
+}
+
 func turnStateTemplateAuditFromContext(ctx context.Context) *turnStateTemplateAudit {
 	if ctx == nil {
 		return nil
@@ -623,6 +645,15 @@ func attachTurnStateTemplateAudit(c *gin.Context) {
 	c.Request = c.Request.WithContext(withTurnStateTemplateAudit(c.Request.Context()))
 }
 
+// attachFreshTurnStateTemplateAudit replaces any existing audit on the request
+// context. Intended for per-turn Responses WebSocket handling.
+func attachFreshTurnStateTemplateAudit(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	c.Request = c.Request.WithContext(replaceTurnStateTemplateAudit(c.Request.Context()))
+}
+
 func recordTurnStateTemplateAudit(ctx context.Context, decision string, inboundLen, outboundLen int, rewritten bool) {
 	audit := turnStateTemplateAuditFromContext(ctx)
 	if audit == nil {
@@ -630,6 +661,12 @@ func recordTurnStateTemplateAudit(ctx context.Context, decision string, inboundL
 	}
 	audit.mu.Lock()
 	defer audit.mu.Unlock()
+	// Handler Apply may record substitute/inject; executor Apply can later
+	// record pass on the same context. Keep the rewrite mark for usage logs.
+	if audit.recorded && decision == "pass" &&
+		(audit.decision == "substitute" || audit.decision == "inject") {
+		return
+	}
 	audit.decision = decision
 	audit.inboundLen = inboundLen
 	audit.outboundLen = outboundLen

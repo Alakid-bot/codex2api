@@ -190,6 +190,12 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	if baseKey == "" && headerSessionID != sessionID {
 		baseKey = headerSessionID
 	}
+	// Handshake headers (including X-Codex-Turn-State from template Apply) freeze at
+	// dial time. Isolate reusable slots by the same model string used for template
+	// lookup so a later model cannot reuse a connection whose turn-state was frozen
+	// for a different template identity. prompt_cache_key / session header isolation
+	// comments above are unchanged.
+	baseKey = reusablePoolBaseKeyWithModel(baseKey, gjson.GetBytes(wsBody, "model").String())
 	if wc == nil {
 		if proxy.IsStatelessWebsocketSessionID(sessionID) && baseKey != "" && !statelessOneShotEnabled() {
 			wc, pr, poolSessionID, err2 = e.manager.AcquireReusableConnection(ctx, account, wsURL, baseKey, sessionID, statelessConnectionSlots(), headers, proxyOverride)
@@ -316,6 +322,20 @@ func (e *Executor) prepareWebsocketBody(body []byte, sessionID string) []byte {
 	wsBody, _ = sjson.SetBytes(wsBody, "stream", true)
 
 	return wsBody
+}
+
+
+// reusablePoolBaseKeyWithModel isolates reusable WS slots by the model string used
+// for turn-state template lookup. Handshake headers freeze at dial time; without
+// this, a later model can reuse a connection whose X-Codex-Turn-State was frozen
+// for a different template identity.
+func reusablePoolBaseKeyWithModel(baseKey, model string) string {
+	baseKey = strings.TrimSpace(baseKey)
+	model = strings.TrimSpace(model)
+	if baseKey == "" || model == "" {
+		return baseKey
+	}
+	return baseKey + "|m:" + model
 }
 
 // prepareWebsocketHeaders 准备 WebSocket 请求头。

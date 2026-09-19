@@ -10621,6 +10621,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	persistedAutoResetCreditsEnabled := false
 	persistedAutoResetCreditsBeforeExpiryMin := 60
 	persistedAutoActivate5hWindowEnabled := false
+	persistedCodexTurnStateTemplateCache := false
+	persistedCodexTurnStateAccountMode := proxy.CodexTurnStateAccountModeAuto
 	codexImagesMainModel := ""
 	persistedUTLSShutdownTimeoutMinutes := database.NormalizeUTLSShutdownTimeoutMinutes(0)
 	modelsListReadMaxBytes := database.DefaultModelsListReadMaxBytes
@@ -10645,6 +10647,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		persistedAutoResetCreditsEnabled = existingSettings.AutoResetCreditsEnabled
 		persistedAutoResetCreditsBeforeExpiryMin = existingSettings.AutoResetCreditsBeforeExpiryMin
 		persistedAutoActivate5hWindowEnabled = existingSettings.AutoActivate5hWindowEnabled
+		persistedCodexTurnStateTemplateCache = existingSettings.CodexTurnStateTemplateCacheEnabled
+		persistedCodexTurnStateAccountMode = proxy.NormalizeCodexTurnStateAccountMode(existingSettings.CodexTurnStateAccountMode)
 		codexImagesMainModel = existingSettings.CodexImagesMainModel
 		persistedUTLSShutdownTimeoutMinutes = database.NormalizeUTLSShutdownTimeoutMinutes(existingSettings.UTLSShutdownTimeoutMinutes)
 		modelsListReadMaxBytes = database.NormalizeModelsListReadMaxBytes(existingSettings.ModelsListReadMaxBytes)
@@ -10719,11 +10723,15 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	previousAutoResetCreditsEnabled := runtimeCfg.AutoResetCreditsEnabled
 	previousAutoResetCreditsBeforeExpiryMin := runtimeCfg.AutoResetCreditsBeforeExpiryMin
 	previousAutoActivate5hWindowEnabled := runtimeCfg.AutoActivate5hWindowEnabled
+	previousCodexTurnStateTemplateCache := runtimeCfg.CodexTurnStateTemplateCache
+	previousCodexTurnStateAccountMode := runtimeCfg.CodexTurnStateAccountMode
 	// 数据库是多实例下的权威来源；用持久值作为本次 partial update 的基线，
 	// 避免旧实例保存无关字段时把自动消费配置回滚成自己的陈旧快照。
 	runtimeCfg.AutoResetCreditsEnabled = persistedAutoResetCreditsEnabled
 	runtimeCfg.AutoResetCreditsBeforeExpiryMin = persistedAutoResetCreditsBeforeExpiryMin
 	runtimeCfg.AutoActivate5hWindowEnabled = persistedAutoActivate5hWindowEnabled
+	runtimeCfg.CodexTurnStateTemplateCache = persistedCodexTurnStateTemplateCache
+	runtimeCfg.CodexTurnStateAccountMode = persistedCodexTurnStateAccountMode
 	runtimeCfg.UTLSShutdownTimeoutMin = persistedUTLSShutdownTimeoutMinutes
 	runtimeCfg.ModelsListReadMaxBytes = modelsListReadMaxBytes
 	continuousRetryPolicy := h.store.GetContinuousRetryPolicy()
@@ -10740,6 +10748,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	autoResetCreditsChanged := (req.AutoResetCreditsEnabled != nil && *req.AutoResetCreditsEnabled != persistedAutoResetCreditsEnabled) ||
 		(req.AutoResetCreditsBeforeExpiryMin != nil && *req.AutoResetCreditsBeforeExpiryMin != persistedAutoResetCreditsBeforeExpiryMin)
 	autoActivate5hChanged := req.AutoActivate5hWindowEnabled != nil && *req.AutoActivate5hWindowEnabled != persistedAutoActivate5hWindowEnabled
+	turnStateTemplateSettingsChanged := (req.CodexTurnStateTemplateCacheEnabled != nil && *req.CodexTurnStateTemplateCacheEnabled != persistedCodexTurnStateTemplateCache) ||
+		(req.CodexTurnStateAccountMode != nil && proxy.NormalizeCodexTurnStateAccountMode(*req.CodexTurnStateAccountMode) != persistedCodexTurnStateAccountMode)
 	usageLogMode := h.db.GetUsageLogMode()
 	usageLogBatchSize := h.db.GetUsageLogBatchSize()
 	usageLogFlushIntervalSeconds := h.db.GetUsageLogFlushIntervalSeconds()
@@ -11486,6 +11496,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if autoActivate5hChanged {
 		effectiveRuntimeCfg.AutoActivate5hWindowEnabled = previousAutoActivate5hWindowEnabled
 	}
+	if turnStateTemplateSettingsChanged {
+		// Hold back until UpdateSystemSettings succeeds (same pattern as auto-reset).
+		effectiveRuntimeCfg.CodexTurnStateTemplateCache = previousCodexTurnStateTemplateCache
+		effectiveRuntimeCfg.CodexTurnStateAccountMode = previousCodexTurnStateAccountMode
+	}
 	effectiveRuntimeCfg = proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 		// CodexSyncedCLIVersion 由后台同步任务独立维护；管理员保存其他设置时
 		// 必须保留临界区内读到的最新值，避免反向回滚同步结果。
@@ -11873,6 +11888,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			writeError(c, http.StatusInternalServerError, "保存 5h 窗口自动激活设置失败，设置未生效")
 			return
 		}
+		if turnStateTemplateSettingsChanged {
+			runtimeCfg = effectiveRuntimeCfg
+			writeError(c, http.StatusInternalServerError, "保存 turn-state 模板缓存设置失败，设置未生效")
+			return
+		}
 		if continuousRetryChanged {
 			writeError(c, http.StatusInternalServerError, "保存持续重试策略失败，设置未生效")
 			return
@@ -11946,6 +11966,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 				return runtimeCfg
 			})
 			h.triggerAutoActivate5hScan()
+		}
+		if turnStateTemplateSettingsChanged {
+			runtimeCfg = proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
+				runtimeCfg.CodexSyncedCLIVersion = current.CodexSyncedCLIVersion
+				return runtimeCfg
+			})
 		}
 		if modelsListReadLimitChanged {
 			if updateErr := h.db.UpdateModelsListReadMaxBytes(c.Request.Context(), *req.ModelsListReadMaxBytes); updateErr != nil {
