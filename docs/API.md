@@ -395,6 +395,20 @@ Images 入口的 2.5 token 计费区分文本输入、图片输入与各自缓�
 
 - `POST /v1/images/jobs`：以后台创建的 API Key 认证，返回 HTTP 202 和 `job`。
 - `GET /v1/images/jobs/:id`：使用创建时的同一 API Key 查询，其他密钥返回 404。
+- `GET /v1/images/jobs/:id/result`：使用同一 API Key 查询精简状态和结果；不返回提示词、`params_json`、输入图片、密钥展示信息或图片 Base64 缓存。适合频繁轮询，原创建和查询接口保持不变。
+
+精简查询在 queued/running 时也返回 HTTP 200，`assets` 为空数组；成功后通过 `job.assets[].proxy_url` 下载图片文件，相对路径按服务地址解析。失败原因在 `error_message`，部分成功的提示在 `warning`。该接口忽略 `include_cache`，始终不附带图片缓存。不存在或不属于当前 Key 的任务均返回 404。
+
+```bash
+curl 'https://your-host/v1/images/jobs/42/result' \
+  --header 'Authorization: Bearer YOUR_API_KEY'
+```
+
+成功响应示例（签名 URL 仅为占位）：
+
+```json
+{"job":{"id":42,"status":"succeeded","assets":[{"id":123,"proxy_url":"/p/img/123?exp=...&sig=...","mime_type":"image/png","bytes":1500000,"width":1024,"height":1536,"model":"gpt-image-2","output_format":"png"}],"error_message":"","duration_ms":45000,"created_at":"2026-09-19T06:50:40Z"}}
+```
 
 请求示例：
 
