@@ -470,7 +470,13 @@ func (h *Handler) ListImageGenerationJobs(c *gin.Context) {
 	page, pageSize := paginationParams(c, 20)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
-	result, err := h.db.ListImageGenerationJobs(ctx, page, pageSize, 0)
+	var result *database.ImageJobPage
+	var err error
+	if c.Query("summary") == "1" {
+		result, err = h.db.ListImageJobSummaries(ctx, page, pageSize, 0)
+	} else {
+		result, err = h.db.ListImageGenerationJobs(ctx, page, pageSize, 0)
+	}
 	if err != nil {
 		writeInternalError(c, err)
 		return
@@ -487,7 +493,12 @@ func (h *Handler) GetImageGenerationJob(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
-	job, err := h.db.GetImageGenerationJob(ctx, id)
+	var job *database.ImageGenerationJob
+	if c.Query("summary") == "1" {
+		job, err = h.db.GetImageJobSummary(ctx, id)
+	} else {
+		job, err = h.db.GetImageGenerationJob(ctx, id)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(c, http.StatusNotFound, "任务不存在")
 		return
@@ -496,7 +507,7 @@ func (h *Handler) GetImageGenerationJob(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	if c.Query("include_cache") == "1" {
+	if c.Query("include_cache") == "1" && c.Query("summary") != "1" {
 		h.attachImageJobAssetCachePayload(job)
 	}
 	decorateImageJobAssets(job)
@@ -539,6 +550,7 @@ func (h *Handler) DeleteImageGenerationJob(c *gin.Context) {
 			}
 		}
 		thumbCache.Invalidate(asset.ID)
+		removeDiskThumbnails(asset.ID)
 	}
 	writeMessage(c, http.StatusOK, "已删除")
 }
@@ -679,20 +691,14 @@ func (h *Handler) serveImageAssetFile(c *gin.Context, asset *database.ImageAsset
 	}
 	filename := sanitizeDownloadFilename(asset.Filename)
 	if opts.thumbKB > 0 && !opts.download {
-		cacheKey := imagestore.ThumbKey(asset.ID, opts.thumbKB)
-		if data, contentType, ok := thumbCache.Get(cacheKey); ok {
-			c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, thumbnailFilename(filename)))
-			c.Data(http.StatusOK, contentType, data)
+		data, contentType, err := cachedImageThumbnail(c.Request.Context(), asset, backend, opts.thumbKB)
+		if err != nil {
+			writeError(c, http.StatusServiceUnavailable, "缩略图暂时不可用，请重试")
 			return
 		}
-		if data, err := backend.Read(c.Request.Context(), asset.StoragePath); err == nil {
-			if thumb, contentType, ok := imageproc.MakeThumbnail(data, opts.thumbKB); ok {
-				thumbCache.Put(cacheKey, contentType, thumb)
-				c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, thumbnailFilename(filename)))
-				c.Data(http.StatusOK, contentType, thumb)
-				return
-			}
-		}
+		c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, thumbnailFilename(filename)))
+		c.Data(http.StatusOK, contentType, data)
+		return
 	}
 
 	if strings.TrimSpace(asset.MimeType) != "" {
@@ -805,6 +811,7 @@ func (h *Handler) DeleteImageAsset(c *gin.Context) {
 			_ = backend.Delete(ctx, asset.StoragePath)
 		}
 		thumbCache.Invalidate(asset.ID)
+		removeDiskThumbnails(asset.ID)
 	}
 	writeMessage(c, http.StatusOK, "已删除")
 }

@@ -453,6 +453,9 @@ func main() {
 	if err := adminHandler.StartImageJobQueue(backgroundCtx, imageWorkers); err != nil {
 		log.Fatalf("Initialize image queue: %v", err)
 	}
+	if err := adminHandler.StartImageMaintenance(backgroundCtx); err != nil {
+		log.Fatalf("Initialize image maintenance: %v", err)
+	}
 	adminHandler.StartPromptIntelligence(backgroundCtx)
 	adminHandler.RegisterRoutes(r)
 
