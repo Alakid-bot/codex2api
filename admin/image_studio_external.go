@@ -33,6 +33,7 @@ func (h *Handler) RegisterExternalImageRoutes(r *gin.Engine, imageProxy *proxy.H
 	v1.Use(imageProxy.APIKeyAuthMiddleware())
 	v1.POST("/images/jobs", h.CreateExternalImageJob)
 	v1.GET("/images/jobs/:id", h.GetExternalImageJob)
+	v1.GET("/images/jobs/:id/result", h.GetExternalImageJobResult)
 }
 
 func (h *Handler) CreateExternalImageJob(c *gin.Context) {
