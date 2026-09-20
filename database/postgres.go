@@ -460,6 +460,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		if err := db.migrate(ctx); err != nil {
 			return nil, fmt.Errorf("数据库迁移失败: %w", err)
 		}
+		if err := db.ensureCodexTurnStateTemplateSchema(ctx); err != nil {
+			return nil, fmt.Errorf("初始化 Turn-State 模板表失败: %w", err)
+		}
 		if err := db.ensureQualityTestSchema(ctx); err != nil {
 			return nil, fmt.Errorf("初始化检测记录表失败: %w", err)
 		}

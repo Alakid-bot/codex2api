@@ -806,6 +806,31 @@
     "heroChannelTitle": "{{channel}}: {{available}}/{{total}} accounts available · {{requests}} requests today"
   },
   "accounts": {
+    "codexTurnStateProxyLabel": "Template issuance proxy (optional)",
+    "codexTurnStateProxyHint": "Used only to acquire and verify templates with Refresh templates. Leave empty to use the account’s default route. Normal requests, connection tests and quality tests keep their existing proxy.",
+    "codexTurnStateProxyPoolHint": "This field saves a copy of the proxy URL. Select it again if the proxy pool node address changes.",
+    "codexTurnStateSwitchLabel": "Injection",
+    "codexTurnStateFollowGlobal": "Follow global (default)",
+    "codexTurnStateOff": "Disable injection",
+    "codexTurnStateSwitchHint": "The global template cache switch controls automatic and manual injection. Disabling preserves templates and settings; quality checks and connection tests still observe each model’s returned Turn State.",
+    "turnStateStatus": {
+      "injectionDisabled": "Injection off; detection active",
+      "expires": "Template until {{time}}",
+      "refreshResult": "Verified and saved templates for {{saved}}/{{total}} models",
+      "refreshFailed": "Template acquisition failed",
+      "refreshing": "Acquiring and verifying {{model}}",
+      "refreshHint": "Acquire and verify templates",
+      "refresh": "Refresh templates",
+      "ready": "Ready to recover",
+      "healthy": "Normal intelligence",
+      "recovering": "Intelligence recovering",
+      "degraded": "Degraded intelligence",
+      "unknown": "Awaiting observations",
+      "noObservations": "No recent upstream observations",
+      "observation": "{{model}}: {{state}} · Length {{length}}",
+      "cached": "Template cached",
+      "uncached": "No available template"
+    },
     "refreshAllUsage": "Refresh All Usage",
     "refreshAllUsageHint": "Query all WHAM-capable Codex accounts in the runtime pool and update their 5-hour and weekly usage bars.",
     "batchUsageRefreshing": "Refreshing usage",
@@ -6900,6 +6925,51 @@
       "5": "Friday",
       "6": "Saturday",
       "7": "Sunday"
+    }
+  },
+  "turnStateHistory": {
+    "title": "Renewal history",
+    "hint": "Background renewal attempts recorded since this feature was enabled, with account, proxy and result snapshots. Different proxy URLs may share an exit IP; last tested IP is not a live measurement of this request.",
+    "filters": "Renewal history filters",
+    "record": "Record",
+    "account": "Account",
+    "model": "Model",
+    "attempt": "Attempt",
+    "proxy": "Proxy address",
+    "started": "Started at",
+    "status": "Status",
+    "duration": "Duration",
+    "expiry": "Template expiry",
+    "result": "Result",
+    "lastIP": "Last tested IP",
+    "before": "Before",
+    "after": "After",
+    "inProgress": "Acquiring and validating a template",
+    "allStatuses": "All statuses",
+    "allProxies": "All proxies",
+    "clear": "Clear filters",
+    "loading": "Loading renewal history",
+    "empty": "No renewal records",
+    "emptyHint": "Attempts are recorded when templates approach expiry. Earlier unrecorded attempts are not backfilled as successes or failures.",
+    "statuses": {
+      "running": "Renewing",
+      "success": "Succeeded",
+      "failed": "Failed",
+      "interrupted": "Interrupted"
+    },
+    "routes": {
+      "issuance": "Issuance proxy",
+      "account-default": "Account default",
+      "pool": "Proxy pool",
+      "resin": "Resin",
+      "direct": "Direct"
+    },
+    "reasons": {
+      "renewed": "Newer template validated and saved",
+      "probe_failed": "Acquisition or validation request failed",
+      "no_new_verified_template": "No newer validated template obtained",
+      "no_available_proxy_or_route_error": "No unused proxy available or proxy lookup failed",
+      "worker_interrupted": "Task interrupted; renewal success not confirmed"
     }
   }
 }

@@ -165,21 +165,23 @@ type Handler struct {
 
 	// 「主动重置次数」消耗操作的工作区级互斥锁（workspace -> *sync.Mutex），
 	// 串行化同一上游工作区的并发重置，避免重复消耗与次数计数竞态。
-	resetCreditLocks          sync.Map
-	resetCreditLastSuccess    sync.Map
-	resetCreditSuccessfulIDs  sync.Map
-	autoResetCreditsWake      chan struct{}
-	autoResetCreditsStartOnce sync.Once
-	autoResetCreditsWG        sync.WaitGroup
-	autoActivate5hWake        chan struct{}
-	autoActivate5hStartOnce   sync.Once
-	autoActivate5hWG          sync.WaitGroup
-	resetCreditPostMu         sync.Mutex
-	resetCreditPostWG         sync.WaitGroup
-	resetCreditPostCtx        context.Context
-	resetCreditPostCancel     context.CancelFunc
-	resetCreditPostClosed     bool
-	settingsUpdateMu          sync.Mutex
+	resetCreditLocks               sync.Map
+	resetCreditLastSuccess         sync.Map
+	resetCreditSuccessfulIDs       sync.Map
+	autoResetCreditsWake           chan struct{}
+	codexTurnStateRenewalStartOnce sync.Once
+	codexTurnStateRenewalWG        sync.WaitGroup
+	autoResetCreditsStartOnce      sync.Once
+	autoResetCreditsWG             sync.WaitGroup
+	autoActivate5hWake             chan struct{}
+	autoActivate5hStartOnce        sync.Once
+	autoActivate5hWG               sync.WaitGroup
+	resetCreditPostMu              sync.Mutex
+	resetCreditPostWG              sync.WaitGroup
+	resetCreditPostCtx             context.Context
+	resetCreditPostCancel          context.CancelFunc
+	resetCreditPostClosed          bool
+	settingsUpdateMu               sync.Mutex
 
 	// 重复账号合并互斥锁：串行化 mergeRefreshedDuplicateIntoExisting，
 	// 防止并发导入同一身份的多个账号时互相合并、把双方都软删（账号丢失）。
@@ -1166,6 +1168,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.PATCH("/accounts/:id/models", h.UpdateAccountModels)
 	api.POST("/accounts/:id/models/sync-upstream", h.SyncAccountUpstreamModels)
 	api.POST("/accounts/:id/models/probe", h.ProbeAccountModels)
+	api.POST("/accounts/:id/turn-state/refresh", h.RefreshCodexTurnStateTemplates)
+	api.GET("/codex-turn-state/renewals", h.ListCodexTurnStateHistory)
 	api.PATCH("/accounts/:id/scheduler", h.UpdateAccountScheduler)
 	api.DELETE("/accounts/:id", h.DeleteAccount)
 	api.GET("/accounts/health-bars", h.GetAccountHealthBars)
@@ -1687,6 +1691,8 @@ type accountResponse struct {
 	ClaudeVersionPolicyOverride   string                      `json:"claude_version_policy_override,omitempty"`
 	ClaudeClientVersionOverride   string                      `json:"claude_client_version_override,omitempty"`
 	Timezone                      string                      `json:"timezone,omitempty"`
+	CodexTurnStateProxyURL        string                      `json:"codex_turn_state_proxy_url,omitempty"`
+	CodexTurnStateDisabled        bool                        `json:"codex_turn_state_disabled"`
 	CodexTurnState                string                      `json:"codex_turn_state,omitempty"`
 	CodexTurnStateModels          string                      `json:"codex_turn_state_models,omitempty"`
 	CodexTurnStateSetAt           string                      `json:"codex_turn_state_set_at,omitempty"`
@@ -2148,6 +2154,8 @@ type updateAccountSchedulerReq struct {
 	ClaudeVersionPolicy     json.RawMessage `json:"claude_version_policy"`
 	ClaudeClientVersion     json.RawMessage `json:"claude_client_version"`
 	Timezone                json.RawMessage `json:"timezone"`
+	CodexTurnStateProxyURL  json.RawMessage `json:"codex_turn_state_proxy_url"`
+	CodexTurnStateDisabled  json.RawMessage `json:"codex_turn_state_disabled"`
 	CodexTurnState          json.RawMessage `json:"codex_turn_state"`
 	CodexTurnStateModels    json.RawMessage `json:"codex_turn_state_models"`
 }
@@ -2174,6 +2182,8 @@ type accountSchedulerUpdate struct {
 	ClaudeVersionPolicy     database.OptionalString
 	ClaudeClientVersion     database.OptionalString
 	Timezone                database.OptionalString
+	CodexTurnStateProxyURL  database.OptionalString
+	CodexTurnStateDisabled  database.OptionalBool
 	CodexTurnState          database.OptionalString
 	CodexTurnStateModels    database.OptionalString
 	CredentialUpdates       map[string]interface{}
@@ -2282,6 +2292,20 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	codexTurnStateProxyURL, err := parseOptionalStringField(req.CodexTurnStateProxyURL, "codex_turn_state_proxy_url", func(value string) error {
+		if value == "" {
+			return nil
+		}
+		_, err := normalizeManagedProxyURL(value)
+		return err
+	})
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	codexTurnStateDisabled, err := parseOptionalBoolField(req.CodexTurnStateDisabled, "codex_turn_state_disabled")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
 	codexTurnStateField, err := parseOptionalStringField(req.CodexTurnState, "codex_turn_state", auth.ValidateCodexTurnState)
 	if err != nil {
 		return accountSchedulerUpdate{}, err
@@ -2324,6 +2348,12 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	}
 	if timezoneField.Set {
 		credentialUpdates[auth.AccountTimezoneCredentialKey] = strings.TrimSpace(timezoneField.Value)
+	}
+	if codexTurnStateProxyURL.Set {
+		credentialUpdates[auth.CodexTurnStateProxyURLCredentialKey] = codexTurnStateProxyURL.Value
+	}
+	if codexTurnStateDisabled.Set {
+		credentialUpdates[auth.CodexTurnStateDisabledCredentialKey] = codexTurnStateDisabled.Value
 	}
 	if codexTurnStateField.Set {
 		credentialUpdates[auth.CodexTurnStateCredentialKey] = codexTurnStateField.Value
@@ -2397,6 +2427,8 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ClaudeVersionPolicy:     claudeVersionPolicy,
 		ClaudeClientVersion:     claudeClientVersion,
 		Timezone:                timezoneField,
+		CodexTurnStateProxyURL:  codexTurnStateProxyURL,
+		CodexTurnStateDisabled:  codexTurnStateDisabled,
 		CodexTurnState:          codexTurnStateField,
 		CodexTurnStateModels:    codexTurnStateModelsField,
 		CredentialUpdates:       credentialUpdates,
@@ -2474,6 +2506,8 @@ func refineCodexTurnStateSetAt(row *database.AccountRow, update accountScheduler
 
 func (u accountSchedulerUpdate) hasChanges() bool {
 	return u.ScoreBiasOverride.Set ||
+		u.CodexTurnStateProxyURL.Set ||
+		u.CodexTurnStateDisabled.Set ||
 		u.CodexTurnState.Set ||
 		u.CodexTurnStateModels.Set ||
 		u.BaseConcurrencyOverride.Set ||
@@ -2781,6 +2815,12 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if value, ok := update.CredentialUpdates[auth.UpstreamRequestIDHeaderCredentialKey].(string); ok {
 		h.store.ApplyAccountUpstreamRequestIDHeader(id, value)
+	}
+	if update.CodexTurnStateProxyURL.Set {
+		h.store.ApplyAccountCodexTurnStateProxyURL(id, update.CodexTurnStateProxyURL.Value)
+	}
+	if update.CodexTurnStateDisabled.Set {
+		h.store.ApplyAccountCodexTurnStateDisabled(id, update.CodexTurnStateDisabled.Value)
 	}
 	if update.CodexTurnState.Set || update.CodexTurnStateModels.Set {
 		if account := h.store.FindByID(id); account != nil {

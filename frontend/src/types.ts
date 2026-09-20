@@ -335,6 +335,9 @@ export interface AccountRow {
   claude_usage_windows_probed?: boolean
   timezone?: string
   custom_headers?: Record<string, string> | null
+  codex_turn_state_status?: CodexTurnStateStatus
+  codex_turn_state_proxy_url?: string
+  codex_turn_state_disabled?: boolean
   /** Forced X-Codex-Turn-State injected on every outbound Codex request; empty = off. */
   codex_turn_state?: string
   /** Comma-separated model scope for the injection; empty = all models. */
@@ -524,8 +527,31 @@ export interface AccountPageStatsResponse {
   stats: Record<string, AccountPageStatsItem>
 }
 
+export type CodexTurnStatePhase = 'unknown' | 'ready' | 'healthy' | 'recovering' | 'degraded'
+
+export interface CodexTurnStateStatus {
+  injection_enabled?: boolean
+  state: CodexTurnStatePhase
+  mode: 'personal' | 'team'
+  template_length: number
+  replace_length: number
+  models: {
+    model: string
+    state: CodexTurnStatePhase
+    length: number
+    consecutive: number
+    observed_at: string
+    template_cached: boolean
+    template_expires_at?: string
+  }[]
+}
+
 export interface AccountLiveStateResponse {
-  accounts: Record<string, { active_requests: number; occupied_requests: number }>
+  accounts: Record<string, {
+    codex_turn_state_status?: CodexTurnStateStatus
+    active_requests: number
+    occupied_requests: number
+  }>
   session_slot_buffer_enabled: boolean
 }
 
@@ -1462,6 +1488,8 @@ export interface UpdateAccountSchedulerRequest {
   claude_version_policy?: 'passthrough' | 'fixed' | 'minimum' | null
   claude_client_version?: string | null
   timezone?: string | null
+  codex_turn_state_proxy_url?: string | null
+  codex_turn_state_disabled?: boolean | null
   codex_turn_state?: string | null
   codex_turn_state_models?: string | null
 }
