@@ -71,12 +71,10 @@ func admitDirectImageExecution(c *gin.Context) (func(), bool) {
 	}
 }
 
-// Workers reserve per-key concurrency before downloading inputs. Saturation
-// means wait, not creation of a failed job.
-func (h *Handler) TryAcquireImageJobKey(row *database.APIKeyRow) (func(), bool) {
-	if row == nil || row.Limits.MaxConcurrency <= 0 {
-		return func() {}, true
-	}
-	release, _, ok := h.apiKeyConcurrencyLimiter().acquire(row.ID, row.Limits.MaxConcurrency)
-	return release, ok
+// Image jobs deliberately bypass the generic API-key concurrency limiter.
+func (h *Handler) TryAcquireImageJobKey(_ *database.APIKeyRow) (func(), bool) {
+	// Image jobs intentionally do not consume API-key concurrency slots. The
+	// image account scheduler and upstream health/cooldown handling remain the
+	// only execution safeguards for this workload.
+	return func() {}, true
 }

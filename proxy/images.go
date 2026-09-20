@@ -1173,11 +1173,6 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 }
 
 func (h *Handler) ImagesGenerations(c *gin.Context) {
-	releaseImage, admitted := admitDirectImageExecution(c)
-	if !admitted {
-		return
-	}
-	defer releaseImage()
 	rawBody, err := readRawRequestBody(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "Invalid request: " + err.Error(), "type": "invalid_request_error"}})
@@ -1226,13 +1221,6 @@ func (h *Handler) ImagesGenerations(c *gin.Context) {
 	if h.enforceAPIKeyLimitsAndReply(c, imageModel) {
 		return
 	}
-	releaseAPIKeyConcurrency, ok := h.acquireAPIKeyConcurrency(c)
-	if !ok {
-		return
-	}
-	if releaseAPIKeyConcurrency != nil {
-		defer releaseAPIKeyConcurrency()
-	}
 	if isGrokImageModel(imageModel) {
 		h.forwardGrokImagesRequest(c, "/v1/images/generations", imageModel, requestModel, logEffectiveModel, promptForRequest, responseFormat, grokImagesParamsFromJSON(rawBody), nil, stream)
 		return
@@ -1257,11 +1245,6 @@ func (h *Handler) ImagesGenerations(c *gin.Context) {
 }
 
 func (h *Handler) ImagesEdits(c *gin.Context) {
-	releaseImage, admitted := admitDirectImageExecution(c)
-	if !admitted {
-		return
-	}
-	defer releaseImage()
 	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
 	if strings.HasPrefix(contentType, "application/json") {
 		h.imagesEditsFromJSON(c)
@@ -1363,13 +1346,6 @@ func (h *Handler) imagesEditsFromMultipart(c *gin.Context) {
 			return
 		}
 		maskDataURL = dataURL
-	}
-	releaseAPIKeyConcurrency, ok := h.acquireAPIKeyConcurrency(c)
-	if !ok {
-		return
-	}
-	if releaseAPIKeyConcurrency != nil {
-		defer releaseAPIKeyConcurrency()
 	}
 	if isGrokImageModel(imageModel) {
 		h.forwardGrokImagesRequest(c, "/v1/images/edits", imageModel, requestModel, logEffectiveModel, promptForRequest, responseFormat, grokImagesParamsFromForm(c), images, stream)
@@ -1503,13 +1479,6 @@ func (h *Handler) imagesEditsFromJSON(c *gin.Context) {
 	if h.enforceAPIKeyLimitsAndReply(c, imageModel) {
 		return
 	}
-	releaseAPIKeyConcurrency, ok := h.acquireAPIKeyConcurrency(c)
-	if !ok {
-		return
-	}
-	if releaseAPIKeyConcurrency != nil {
-		defer releaseAPIKeyConcurrency()
-	}
 	if isGrokImageModel(imageModel) {
 		h.forwardGrokImagesRequest(c, "/v1/images/edits", imageModel, requestModel, logEffectiveModel, promptForRequest, responseFormat, grokImagesParamsFromJSON(rawBody), images, stream)
 		return
@@ -1580,13 +1549,42 @@ func imagePreferredAccountFilter(account *auth.Account) bool {
 // 又不会被关进分流组，两个方向都跟配置意图相反。
 func (h *Handler) nextImageAccount(c *gin.Context, apiKeyID int64, exclude map[int64]bool, model string, identity requestSessionIdentity) (*auth.Account, string) {
 	preferredFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(model, imagePreferredAccountFilter))
-	preferredFilter = h.applyScopeBudgetFilter(c, preferredFilter)
-	account, stickyProxyURL := h.nextAccountForSessionWithFilter("", apiKeyID, exclude, preferredFilter)
+	preferredFilter = h.applyImageScopeBudgetFilter(c, preferredFilter)
+	account := h.store.NextImageExcluding(apiKeyID, exclude, preferredFilter)
 	if account != nil {
-		return account, stickyProxyURL
+		return account, account.GetProxyURL()
 	}
 	fallbackFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(model, imageCapableAccountFilter))
-	return h.nextAccountForSessionWithFilter("", apiKeyID, exclude, h.applyScopeBudgetFilter(c, fallbackFilter))
+	account = h.store.NextImageExcluding(apiKeyID, exclude, h.applyImageScopeBudgetFilter(c, fallbackFilter))
+	if account == nil {
+		return nil, ""
+	}
+	return account, account.GetProxyURL()
+}
+
+// waitForImageAccountAvailable only waits for health/cooldown recovery. Image
+// requests no longer wait behind the normal per-account concurrency window.
+func (h *Handler) waitForImageAccountAvailable(ctx context.Context, apiKeyID int64, exclude map[int64]bool, filter auth.AccountFilter) (*auth.Account, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		account := h.store.NextImageExcluding(apiKeyID, exclude, filter)
+		if account != nil {
+			return account, account.GetProxyURL(), nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, "", ctx.Err()
+		case <-deadline.C:
+			return nil, "", nil
+		case <-ticker.C:
+		}
+	}
 }
 
 // forwardImagesRequest 执行 Images 请求的账号调度、上游重试、响应聚合和下游输出。
@@ -1602,7 +1600,6 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 	apiKeyID := requestAPIKeyID(c)
 	sessionIdentity := resolveRequestSessionIdentity(c.Request.Header, responsesBody)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
-	defer h.ReleaseAPIKeyScopeConcurrency(c)
 	continuousRetryPolicy := continuousRetryPolicyForCall(nil)
 	rememberContinuousRetryPolicyForRequest(c, continuousRetryPolicy)
 	stopRetryDeadline := installContinuousRetryHTTPDeadline(c, continuousRetryPolicy, continuousRetryProtocolResponses)
@@ -1662,8 +1659,8 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			preferredID := sameAccountRetryID
 			sameAccountRetryID = 0
 			preferredFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(requestModel, imageCapableAccountFilter))
-			preferredFilter = h.applyScopeBudgetFilter(c, preferredFilter)
-			account = h.store.TakePreferredAccountWithDispatch(preferredID, apiKeyID, nil, preferredFilter, dispatchPolicyForModel(requestModel))
+			preferredFilter = h.applyImageScopeBudgetFilter(c, preferredFilter)
+			account = h.store.TakeImageAccount(preferredID, apiKeyID, nil, preferredFilter)
 			if account != nil {
 				stickyProxyURL = account.GetProxyURL()
 			}
@@ -1686,7 +1683,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			}
 			waitFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(requestModel, imageCapableAccountFilter))
 			var selectionErr error
-			account, stickyProxyURL, selectionErr = h.waitForRetryAccountAvailable(c.Request.Context(), "", apiKeyID, retryExclusions.ForSelection(), h.applyScopeBudgetFilter(c, waitFilter), false, dispatchPolicyForModel(requestModel))
+			account, stickyProxyURL, selectionErr = h.waitForImageAccountAvailable(c.Request.Context(), apiKeyID, retryExclusions.ForSelection(), h.applyImageScopeBudgetFilter(c, waitFilter))
 			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolResponses) {
 				return
 			}
@@ -1723,7 +1720,6 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			}
 		}
 
-		h.AcquireAPIKeyScopeConcurrency(c, account)
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		apiKey := strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))

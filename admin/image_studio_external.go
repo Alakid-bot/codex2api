@@ -33,6 +33,8 @@ func (h *Handler) RegisterExternalImageRoutes(r *gin.Engine, imageProxy *proxy.H
 	v1.Use(imageProxy.APIKeyAuthMiddleware())
 	v1.POST("/images/jobs", h.CreateExternalImageJob)
 	v1.GET("/images/jobs/:id", h.GetExternalImageJob)
+	v1.POST("/images/jobs/result", h.GetExternalImageJobResults)
+	v1.POST("/images/jobs/results", h.GetExternalImageJobResults)
 	v1.GET("/images/jobs/:id/result", h.GetExternalImageJobResult)
 }
 
@@ -105,25 +107,12 @@ func (h *Handler) CreateExternalImageJob(c *gin.Context) {
 	}
 
 	// Preflight the whole batch so one accepted job cannot cross an RPM/RPD
-	// boundary, then reserve the concurrency slot for the job before accepting
-	// it. Holding the slot from enqueue through background completion is what
-	// makes MaxConcurrency admission control: without it every request is
-	// accepted and the ones that cannot run just become failed job rows.
+	// boundary. Image execution itself is intentionally not gated by API-key
+	// concurrency; account health/cooldown and upstream limits remain active.
 	if status, msg := imageProxy.EnforceAPIKeyLimitsForRequests(c, req.Model, req.N); status != 0 {
 		proxy.SendAPIKeyLimitError(c, status, msg)
 		return
 	}
-	releaseAPIKeyConcurrency, ok := imageProxy.AcquireAPIKeyConcurrency(c)
-	if !ok {
-		return
-	}
-	jobStarted := false
-	defer func() {
-		if !jobStarted && releaseAPIKeyConcurrency != nil {
-			releaseAPIKeyConcurrency()
-		}
-	}()
-
 	paramsJSON, _ := json.Marshal(req)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
@@ -156,11 +145,7 @@ func (h *Handler) CreateExternalImageJob(c *gin.Context) {
 		imageLogAPIKeyLabel(keyID, keyName, keyMasked),
 		len([]rune(req.Prompt)),
 	)
-	jobStarted = true
 	go func() {
-		if releaseAPIKeyConcurrency != nil {
-			defer releaseAPIKeyConcurrency()
-		}
 		opts := imageJobRunOptions{sharedAPIKeyConcurrency: true}
 		if editMode {
 			h.runImageEditJob(jobID, req, apiKey, opts)

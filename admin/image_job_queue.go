@@ -57,18 +57,12 @@ func (h *Handler) StartImageJobQueue(ctx context.Context, workers int) error {
 	if err := h.db.ExpireImageJobLeases(ctx, time.Now()); err != nil {
 		return err
 	}
-	memoryWorkers := 0
-	if raw := strings.TrimSpace(os.Getenv("IMAGE_JOB_MEMORY_WORKERS")); raw != "" {
-		var err error
-		memoryWorkers, err = strconv.Atoi(raw)
-		if err != nil || memoryWorkers < 0 || memoryWorkers > workers {
-			return fmt.Errorf("IMAGE_JOB_MEMORY_WORKERS must be 0..IMAGE_JOB_WORKERS")
-		}
-	}
-	proxy.ConfigureImagePipeline(memoryWorkers)
-	h.imageQueue = &imageJobQueue{intake: make(chan struct{}, 2), pipeline: memoryWorkers > 0}
-	log.Printf("[image-pipeline] configured inflight=%d memory_workers=%d", workers, memoryWorkers)
-	proxy.ConfigureImageExecutionLimit(workers)
+	// Image jobs are deliberately not throttled by a process-wide execution or
+	// memory worker semaphore. The durable queue only persists requests and
+	// pollers launch each claimed job independently.
+	proxy.ConfigureImagePipeline(0)
+	h.imageQueue = &imageJobQueue{intake: make(chan struct{}, 2), pipeline: false}
+	log.Printf("[image-pipeline] execution concurrency=unlimited")
 	for i := 0; i < workers; i++ {
 		h.imageQueue.wg.Add(1)
 		go func() { defer h.imageQueue.wg.Done(); h.imageQueueWorker(ctx) }()
@@ -257,12 +251,10 @@ func (h *Handler) imageQueueWorker(parent context.Context) {
 			return
 		case <-ticker.C:
 		}
-		ctx, release, err := proxy.AcquireImageExecution(parent)
-		if err != nil {
-			return
-		}
-		h.runNextQueuedImage(ctx)
-		release()
+		// Queue workers are pollers, not an execution semaphore. Each claimed job
+		// runs independently so IMAGE_JOB_WORKERS no longer caps in-flight image
+		// generation requests.
+		go h.runNextQueuedImage(parent)
 	}
 }
 
