@@ -20,7 +20,7 @@ import (
 
 // X-Codex-Turn-State Fernet template cache (v1, sleep-state aligned).
 //
-// Process-memory map keyed by (account DBID, exact upstream model) stores reusable
+// Database rows keyed by (account DBID, exact upstream model) store reusable
 // Fernet templates observed on upstream responses. Accept uses Fernet Blocks
 // (personal 10 / team 12), never forges, never harvests client request headers,
 // never crosses account or model. Compose AFTER guardCodexTurnStateEcho.
@@ -260,15 +260,18 @@ type turnStateTemplateEntry struct {
 }
 
 type turnStateTemplateStore struct {
-	mu      sync.Mutex
-	entries map[turnStateTemplateKey]turnStateTemplateEntry
-	now     func() time.Time
+	mu           sync.Mutex
+	entries      map[turnStateTemplateKey]turnStateTemplateEntry
+	observations map[turnStateTemplateKey]turnStateObservation
+	db           *database.DB
+	now          func() time.Time
 }
 
 func newTurnStateTemplateStore() *turnStateTemplateStore {
 	return &turnStateTemplateStore{
-		entries: make(map[turnStateTemplateKey]turnStateTemplateEntry),
-		now:     time.Now,
+		entries:      make(map[turnStateTemplateKey]turnStateTemplateEntry),
+		observations: make(map[turnStateTemplateKey]turnStateObservation),
+		now:          time.Now,
 	}
 }
 
@@ -277,7 +280,9 @@ var globalTurnStateTemplates = newTurnStateTemplateStore()
 func resetTurnStateTemplateStoreForTest() {
 	globalTurnStateTemplates.mu.Lock()
 	defer globalTurnStateTemplates.mu.Unlock()
+	globalTurnStateTemplates.db = nil
 	globalTurnStateTemplates.entries = make(map[turnStateTemplateKey]turnStateTemplateEntry)
+	globalTurnStateTemplates.observations = make(map[turnStateTemplateKey]turnStateObservation)
 	globalTurnStateTemplates.now = time.Now
 }
 
@@ -317,12 +322,14 @@ func (s *turnStateTemplateStore) capture(cfg turnStateTemplateConfig, policy tur
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.purgeExpiredLocked(cfg, now)
-	if _, exists := s.entries[key]; !exists {
+	if _, exists := s.entryLocked(key); !exists {
 		s.evictOldestLocked(cfg.MaxEntries)
 	}
-	prev := s.entries[key]
-	s.entries[key] = turnStateTemplateEntry{Value: tok.Value, IssuedAt: tok.Issued, Strikes: prev.Strikes}
-	return true
+	prev, _ := s.entryLocked(key)
+	if prev.IssuedAt.After(tok.Issued) {
+		return false
+	}
+	return s.saveEntryLocked(key, turnStateTemplateEntry{Value: tok.Value, IssuedAt: tok.Issued, Strikes: 0})
 }
 
 func (s *turnStateTemplateStore) lookup(cfg turnStateTemplateConfig, policy turnStateLengthPolicy, accountID int64, model string) (string, bool) {
@@ -338,13 +345,13 @@ func (s *turnStateTemplateStore) lookup(cfg turnStateTemplateConfig, policy turn
 	defer s.mu.Unlock()
 	now := s.now()
 	s.purgeExpiredLocked(cfg, now)
-	entry, ok := s.entries[key]
+	entry, ok := s.entryLocked(key)
 	if !ok {
 		return "", false
 	}
 	tok, err := parseTurnStateToken(entry.Value)
 	if err != nil || !turnStateTokenAccept(tok, now, cfg.TTL, policy.TemplateBlocks) {
-		delete(s.entries, key)
+		s.deleteEntryLocked(key)
 		return "", false
 	}
 	return entry.Value, true
@@ -365,22 +372,21 @@ func (s *turnStateTemplateStore) observePostInject(cfg turnStateTemplateConfig, 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entry, ok := s.entries[key]
+	entry, ok := s.entryLocked(key)
 	if !ok {
 		return false, 0
 	}
 	if !suspect {
 		entry.Strikes = 0
-		s.entries[key] = entry
+		s.saveEntryLocked(key, entry)
 		return false, 0
 	}
-	entry.Strikes++
+	// A response shape alone does not revoke a still-live signed template.
+	// Keep the template until its original TTL; count failed recovery observations.
+	entry.Strikes = min(turnStateStrikeThreshold, entry.Strikes+1)
 	strikes = entry.Strikes
-	if entry.Strikes >= turnStateStrikeThreshold {
-		delete(s.entries, key)
-		return true, strikes
-	}
-	s.entries[key] = entry
+
+	s.saveEntryLocked(key, entry)
 	return false, strikes
 }
 
@@ -390,9 +396,21 @@ func (s *turnStateTemplateStore) clearAccount(accountID int64) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.db != nil {
+		ctx, cancel := templateDBContext()
+		defer cancel()
+		if s.db.DeleteCodexTurnStateTemplate(ctx, accountID, "") != nil {
+			log.Print("[codex-turn-state] database account clear failed")
+		}
+	}
 	for key := range s.entries {
 		if key.AccountID == accountID {
-			delete(s.entries, key)
+			s.deleteEntryLocked(key)
+		}
+	}
+	for key := range s.observations {
+		if key.AccountID == accountID {
+			delete(s.observations, key)
 		}
 	}
 }
@@ -403,7 +421,7 @@ func (s *turnStateTemplateStore) clearKey(accountID int64, model string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.entries, turnStateTemplateKey{AccountID: accountID, Model: strings.TrimSpace(model)})
+	s.deleteEntryLocked(turnStateTemplateKey{AccountID: accountID, Model: strings.TrimSpace(model)})
 }
 
 func (s *turnStateTemplateStore) purgeExpiredLocked(cfg turnStateTemplateConfig, now time.Time) {
@@ -413,12 +431,21 @@ func (s *turnStateTemplateStore) purgeExpiredLocked(cfg turnStateTemplateConfig,
 		// mismatches stay for lookup/capture/strike — a personal caller must not
 		// purge a valid team-length template (and vice versa).
 		if err != nil || !turnStateTokenTimeValid(tok, now, cfg.TTL) {
-			delete(s.entries, key)
+			s.deleteEntryLocked(key)
 		}
 	}
 }
 
 func (s *turnStateTemplateStore) evictOldestLocked(maxEntries int) {
+	if s.db != nil {
+		ctx, cancel := templateDBContext()
+		defer cancel()
+		cfg := loadTurnStateTemplateConfig()
+		if s.db.PruneCodexTurnStateTemplates(ctx, s.now().Add(-cfg.TTL+turnStateAcceptSkew).Unix(), max(0, maxEntries-1)) != nil {
+			log.Print("[codex-turn-state] database prune failed")
+		}
+		return
+	}
 	if maxEntries < 1 {
 		maxEntries = 1
 	}
@@ -448,7 +475,8 @@ func (s *turnStateTemplateStore) lenForTest() int {
 func (s *turnStateTemplateStore) strikesForTest(accountID int64, model string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.entries[turnStateTemplateKey{AccountID: accountID, Model: model}].Strikes
+	entry, _ := s.entryLocked(turnStateTemplateKey{AccountID: accountID, Model: model})
+	return entry.Strikes
 }
 
 func accountEligibleForTurnStateTemplate(account *auth.Account) bool {
@@ -465,10 +493,13 @@ func accountEligibleForTurnStateTemplate(account *auth.Account) bool {
 // CaptureCodexTurnStateTemplate stores an upstream-minted template when enabled
 // and the sole header value Accept(template policy). Never stores replace/degraded
 // shapes. Never harvest client request headers. When this request rewrote outbound
-// state, observes response shape and may clear the bucket after strike threshold.
+// state, observes response shape; a failed observation does not extend or revoke TTL.
 func CaptureCodexTurnStateTemplate(ctx context.Context, account *auth.Account, model string, headers http.Header) {
 	cfg := loadTurnStateTemplateConfig()
-	if !cfg.Enabled || !accountEligibleForTurnStateTemplate(account) || headers == nil {
+	if !accountEligibleForTurnStateTemplate(account) || headers == nil || strings.TrimSpace(model) == "" {
+		return
+	}
+	if !CodexTurnStateModelAllowed(account, model) {
 		return
 	}
 	policy := cfg.policyFor(account)
@@ -482,9 +513,18 @@ func CaptureCodexTurnStateTemplate(ctx context.Context, account *auth.Account, m
 	if len(trimmed) == 0 {
 		return
 	}
+	if probe := turnStateRefreshFromContext(ctx); probe != nil {
+		probe.observe(account, model, trimmed)
+		return
+	}
 	responseValue := trimmed[0]
+	if len(trimmed) != 1 {
+		responseValue = "ambiguous"
+	}
+	cleared := false
 	if turnStateTemplateRewrittenFromContext(ctx) {
-		cleared, strikes := globalTurnStateTemplates.observePostInject(cfg, policy, account.ID(), model, responseValue)
+		var strikes int
+		cleared, strikes = globalTurnStateTemplates.observePostInject(cfg, policy, account.ID(), model, responseValue)
 		if cfg.LogDecisions {
 			if cleared {
 				logTurnStateTemplateDecision(cfg, "strike-clear", account.ID(), model, len(responseValue),
@@ -495,6 +535,7 @@ func CaptureCodexTurnStateTemplate(ctx context.Context, account *auth.Account, m
 			}
 		}
 	}
+	globalTurnStateTemplates.observeStatus(cfg, account, model, responseValue, cleared)
 	stored := globalTurnStateTemplates.capture(cfg, policy, account.ID(), model, trimmed...)
 	if stored {
 		logTurnStateTemplateDecision(cfg, "harvest", account.ID(), model, len(trimmed[0]), "template stored")
@@ -554,12 +595,21 @@ func injectTurnStateReason(value string, parsed, degraded bool, policy turnState
 // ctx carries usage-log audit (turn-state decision/lengths); nil ctx skips audit.
 func ApplyCodexTurnStateTemplate(ctx context.Context, headers http.Header, account *auth.Account, model string) {
 	cfg := loadTurnStateTemplateConfig()
-	if !cfg.Enabled || headers == nil || !accountEligibleForTurnStateTemplate(account) {
+	if !cfg.Enabled || headers == nil || !CodexTurnStateInjectionEnabled(account) {
 		return
 	}
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return
+	}
+	if !CodexTurnStateModelAllowed(account, model) {
+		return
+	}
+	if applyTurnStateRefreshHeader(ctx, headers, account, model) {
+		return
+	}
+	if ctx != nil && ctx.Value(turnStateAdminProbeKey{}) == true {
+		cfg.InjectMode = turnStateInjectAlways
 	}
 	policy := cfg.policyFor(account)
 	inbound := strings.TrimSpace(headers.Get(codexTurnStateHeader))
@@ -576,6 +626,11 @@ func ApplyCodexTurnStateTemplate(ctx context.Context, headers http.Header, accou
 		outboundLen = len(replacement)
 	}
 	recordTurnStateTemplateAudit(ctx, decision, len(inbound), outboundLen, rewritten)
+	if audit := turnStateTemplateAuditFromContext(ctx); audit != nil {
+		audit.mu.Lock()
+		audit.replacement = replacement
+		audit.mu.Unlock()
+	}
 	logTurnStateTemplateDecision(cfg, decision, account.ID(), model, len(inbound), reason)
 }
 
@@ -598,6 +653,7 @@ type turnStateTemplateAudit struct {
 	outboundLen int
 	rewritten   bool
 	recorded    bool
+	replacement string
 }
 
 func withTurnStateTemplateAudit(ctx context.Context) context.Context {
@@ -661,8 +717,8 @@ func recordTurnStateTemplateAudit(ctx context.Context, decision string, inboundL
 	}
 	audit.mu.Lock()
 	defer audit.mu.Unlock()
-	// Handler Apply may record substitute/inject; executor Apply can later
-	// record pass on the same context. Keep the rewrite mark for usage logs.
+	// Repeated header assembly may see the already substituted value. Keep
+	// this attempt's rewrite mark; Begin resets it before failover/retry.
 	if audit.recorded && decision == "pass" &&
 		(audit.decision == "substitute" || audit.decision == "inject") {
 		return

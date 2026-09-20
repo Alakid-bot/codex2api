@@ -528,7 +528,7 @@ func TestCaptureRejectsUnusableWithoutEvictingFullCache(t *testing.T) {
 	}
 }
 
-func TestPostInjectStrikeClearsAfterTwo(t *testing.T) {
+func TestPostInjectStrikeKeepsLiveTemplateUntilExpiry(t *testing.T) {
 	enableTurnStateTemplateCache(t)
 	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
 	setTurnStateTemplateNowForTest(func() time.Time { return now })
@@ -562,8 +562,8 @@ func TestPostInjectStrikeClearsAfterTwo(t *testing.T) {
 	}
 
 	CaptureCodexTurnStateTemplate(ctx, acc, model, bad)
-	if globalTurnStateTemplates.lenForTest() != 0 {
-		t.Fatal("second strike should clear template")
+	if globalTurnStateTemplates.lenForTest() != 1 {
+		t.Fatal("second failed observation must not revoke a live template")
 	}
 }
 
@@ -610,7 +610,6 @@ func TestEncodedLengthsMatchPolicy(t *testing.T) {
 		t.Fatalf("team lengths %d/%d", turnStateEncodedLength(12), turnStateEncodedLength(13))
 	}
 }
-
 
 func TestPurgeExpiredDoesNotDropOtherBlockPolicy(t *testing.T) {
 	enableTurnStateTeamMode(t)
