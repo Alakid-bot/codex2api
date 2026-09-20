@@ -3445,6 +3445,10 @@ export interface UsageLog {
   endpoint: string
   model: string
   effective_model: string
+  /** 上游响应自报的模型名（未自报/历史行为空）。 */
+  upstream_response_model?: string
+  /** 三态：undefined/null=上游未自报无法比对；true/false=自报与实发是否一致。 */
+  upstream_model_mismatch?: boolean | null
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
