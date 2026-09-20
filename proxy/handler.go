@@ -4498,6 +4498,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			var firstTokenMs int
 			var usage *UsageInfo
 			var actualServiceTier string
+			responseModelObserver := &upstreamResponseModelObserver{}
 			ttftRecorded := false
 			// contentTokenSeen is deliberately strict and independent from the
 			// operator's TTFT mode. In loose mode, preflight metadata records TTFT
@@ -4577,6 +4578,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						deltaCharCount += len(parsed.Get("delta").String())
 					}
 					eventType, data, parsed = rewriteEmptyIncompleteTerminal(emptyIncomplete, eventType, data, parsed)
+					observeUpstreamResponseModelFrame(responseModelObserver, parsed, eventType)
 					if isResponsesSuccessTerminalEvent(eventType) {
 						usage = extractUsageFromResult(parsed.Get("response.usage"))
 						if tier := parsed.Get("response.service_tier").String(); tier != "" {
@@ -4671,6 +4673,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					nonStreamResponseBody = append([]byte(nil), respBody...)
 					usage = extractUsageFromResult(gjson.GetBytes(respBody, "usage"))
 					actualServiceTier = gjson.GetBytes(respBody, "service_tier").String()
+					observeUpstreamResponseModelBody(responseModelObserver, respBody)
 					imageLogInfo = imageUsageLogInfoFromResponseJSON(respBody)
 					gotTerminal = true
 					if contentType := resp.Header.Get("Content-Type"); contentType != "" {
@@ -4883,6 +4886,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 			}
 			applyImageUsageLogInfo(logInput, imageLogInfo)
+			applyUpstreamResponseModelObservation(logInput, responseModelObserver, upstreamSentModelForAudit(attemptEffectiveModel, logModel), account.ID())
 			h.logUsageForRequest(c, logInput)
 
 			resp.Body.Close()
@@ -5151,6 +5155,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		var firstTokenMs int
 		var usage *UsageInfo
 		var actualServiceTier string
+		responseModelObserver := &upstreamResponseModelObserver{}
 		ttftRecorded := false
 		gotTerminal := false // 是否收到 response.completed 或 response.failed
 		deltaCharCount := 0  // 累计 delta 字符数（用于断流时估算 token）
@@ -5262,7 +5267,8 @@ func (h *Handler) Responses(c *gin.Context) {
 				outputCollector.Add(data)
 				eventType, data, parsed = rewriteEmptyIncompleteTerminal(emptyIncomplete, eventType, data, parsed)
 
-				// 提取 usage + service_tier
+				// 提取 usage + service_tier + 上游自报模型
+				observeUpstreamResponseModelFrame(responseModelObserver, parsed, eventType)
 				if isResponsesSuccessTerminalEvent(eventType) {
 					// 某些网关的终态 response.output 为空或只含部分项，但此前
 					// output_item.done 已完整到达。流式透传前就地补齐，确保 SSE 与
@@ -5507,6 +5513,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					deltaCharCount += len(parsed.Get("delta").String())
 				}
 				eventType, data, parsed = rewriteEmptyIncompleteTerminal(emptyIncomplete, eventType, data, parsed)
+				observeUpstreamResponseModelFrame(responseModelObserver, parsed, eventType)
 				if isResponsesSuccessTerminalEvent(eventType) {
 					usage = extractUsageFromResult(parsed.Get("response.usage"))
 					if tier := parsed.Get("response.service_tier").String(); tier != "" {
@@ -5776,6 +5783,9 @@ func (h *Handler) Responses(c *gin.Context) {
 			logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 		}
 		applyImageUsageLogInfo(logInput, imageLogInfo)
+		// sentModel 优先取 attempt 实发模型（账号级映射可能改写 attemptEffectiveModel），
+		// 兜底客户端请求模型；上游未自报时 applyUpstreamResponseModelObservation 不做任何事。
+		applyUpstreamResponseModelObservation(logInput, responseModelObserver, upstreamSentModelForAudit(attemptEffectiveModel, logModel), account.ID())
 		h.logUsageForRequest(c, logInput)
 
 		if !accountReleasedForOverflow {
@@ -6241,7 +6251,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			c.Set("x-reasoning-effort", reasoningEffort)
 			c.Set("x-service-tier", usageTiers.ServiceTier)
 
-			h.logUsageForRequest(c, &database.UsageLogInput{
+			compactRelayObserver := &upstreamResponseModelObserver{}
+			observeUpstreamResponseModelBody(compactRelayObserver, respBody)
+			compactRelayLogInput := &database.UsageLogInput{
 				AccountID:            account.ID(),
 				Endpoint:             "/v1/responses/compact",
 				Model:                logModel,
@@ -6262,7 +6274,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				RequestedServiceTier: usageTiers.RequestedServiceTier,
 				ActualServiceTier:    usageTiers.ActualServiceTier,
 				BillingServiceTier:   usageTiers.BillingServiceTier,
-			})
+			}
+			applyUpstreamResponseModelObservation(compactRelayLogInput, compactRelayObserver, upstreamSentModelForAudit(attemptEffectiveModel, logModel), account.ID())
+			h.logUsageForRequest(c, compactRelayLogInput)
 
 			h.store.ReleaseForSessionWithGuard(account, affinityKey, affinityGuard)
 			contentType := resp.Header.Get("Content-Type")
@@ -6618,7 +6632,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		usageTiers := resolveUsageServiceTiers(actualServiceTier, serviceTier)
 
 		totalDuration := int(time.Since(start).Milliseconds())
-		h.logUsageForRequest(c, &database.UsageLogInput{
+		compactObserver := &upstreamResponseModelObserver{}
+		observeUpstreamResponseModelBody(compactObserver, respBody)
+		compactLogInput := &database.UsageLogInput{
 			AccountID:            account.ID(),
 			Endpoint:             "/v1/responses/compact",
 			Model:                logModel,
@@ -6639,7 +6655,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			RequestedServiceTier: usageTiers.RequestedServiceTier,
 			ActualServiceTier:    usageTiers.ActualServiceTier,
 			BillingServiceTier:   usageTiers.BillingServiceTier,
-		})
+		}
+		applyUpstreamResponseModelObservation(compactLogInput, compactObserver, upstreamSentModelForAudit(attemptEffectiveModel, logModel), account.ID())
+		h.logUsageForRequest(c, compactLogInput)
 
 		h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 		h.store.ReleaseForSessionWithGuard(account, affinityKey, affinityGuard)
@@ -7216,6 +7234,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		var firstTokenMs int
 		var usage *UsageInfo
 		var actualServiceTier string
+		responseModelObserver := &upstreamResponseModelObserver{}
 		ttftRecorded := false
 		// TTFT may use loose structural progress, but retry safety is based on
 		// actual content. Chat translation drops many structural events, so
@@ -7302,6 +7321,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					deltaCharCount += len(parsed.Get("delta").String())
 				}
 				eventType, data, parsed = rewriteEmptyIncompleteTerminal(emptyIncomplete, eventType, data, parsed)
+				observeUpstreamResponseModelFrame(responseModelObserver, parsed, eventType)
 				if isResponsesSuccessTerminalEvent(eventType) {
 					usage = extractUsageFromResult(parsed.Get("response.usage"))
 					if tier := parsed.Get("response.service_tier").String(); tier != "" {
@@ -7454,6 +7474,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 					deltaCharCount += len(parsed.Get("delta").String())
 				case "response.completed", "response.incomplete":
+					observeUpstreamResponseModelFrame(responseModelObserver, parsed, eventType)
 					usage = extractUsageFromResult(parsed.Get("response.usage"))
 					if tier := parsed.Get("response.service_tier").String(); tier != "" {
 						actualServiceTier = tier
@@ -7684,6 +7705,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			logInput.CachedTokens = usage.CachedTokens
 			logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 		}
+		applyUpstreamResponseModelObservation(logInput, responseModelObserver, upstreamSentModelForAudit(attemptEffectiveModel, logModel), account.ID())
 		h.logUsageForRequest(c, logInput)
 
 		resp.Body.Close()

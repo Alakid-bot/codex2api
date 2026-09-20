@@ -1136,6 +1136,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	var terminalFailureClientPayload []byte
 	var preContentErrorCandidate []byte
 	var completedResponsePayload []byte
+	responseModelObserver := &upstreamResponseModelObserver{}
 	outputCollector := newResponseOutputCollector()
 	emptyIncomplete := &emptyIncompleteTracker{}
 	terminalFailureEventType := ""
@@ -1216,6 +1217,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		if image, ok := extractImageFromOutputItemDone(data, model); ok {
 			imageLogInfo = mergeImageUsageLogInfo(imageLogInfo, imageUsageLogInfoFromImage(image))
 		}
+		observeUpstreamResponseModelFrame(responseModelObserver, parsed, eventType)
 		if isResponsesSuccessTerminalEvent(eventType) {
 			usage = extractUsageFromResult(parsed.Get("response.usage"))
 			if tier := parsed.Get("response.service_tier").String(); tier != "" {
@@ -1539,6 +1541,8 @@ func (h *Handler) streamResponsesWSUpstream(
 		logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 	}
 	applyImageUsageLogInfo(logInput, imageLogInfo)
+	// WS 轮终态记账：attempt 实发模型优先（effectiveModel），兜底客户端请求模型。
+	applyUpstreamResponseModelObservation(logInput, responseModelObserver, upstreamSentModelForAudit(effectiveModel, model), account.ID())
 	h.logUsageForRequest(c, logInput)
 
 	resp.Body.Close()
