@@ -854,6 +854,11 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 			}
 		}
 	}
+	// 账号自行打开的 Responses WebSocket。生图仍走下面的 HTTP。
+	// 握手失败由执行器返回上游状态或传输错误，这里不改回 HTTP。
+	if openAIResponsesRelayUsesUpstreamWebsocket(account, requestBody) {
+		return executeOpenAIResponsesWebsocket(ctx, account, requestBody, proxyURL, headers, baseURL, apiKey)
+	}
 
 	client := getPooledClient(account, proxyURL)
 	send := func(body []byte) (*http.Response, error) {

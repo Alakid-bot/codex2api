@@ -146,6 +146,8 @@ export type AccountStatus = 'active' | 'ready' | 'cooldown' | 'error' | 'refresh
 export type CodexClientMetadataMode = 'auto' | 'always' | 'off'
 /** OpenAI Responses 中转账号的 Codex 身份透传档位，默认 off（不透传）。 */
 export type CodexPassthroughMode = 'off' | 'auto' | 'always'
+/** OpenAI Responses 中转账号的上游传输，默认 http。 */
+export type ResponsesUpstreamTransport = 'http' | 'websocket'
 /** Codex 官方出站请求的设备指纹收敛档位，默认 off（不收敛）。 */
 export type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full'
 export type ModelCooldownMode = 'off' | 'fixed' | 'adaptive'
@@ -320,6 +322,7 @@ export interface AccountRow {
   model_mapping?: string
   codex_client_metadata_mode?: CodexClientMetadataMode
   codex_passthrough_mode?: CodexPassthroughMode
+  responses_upstream_transport?: ResponsesUpstreamTransport
   codex_fingerprint_mode?: CodexFingerprintMode
   claude_fingerprint_mode?: 'preserve' | 'force' | ''
   claude_client_platform?: 'any' | 'claude_code_cli_only'
@@ -974,6 +977,7 @@ export interface AddOpenAIResponsesAccountRequest {
   model_mapping?: string
   codex_client_metadata_mode?: CodexClientMetadataMode
   codex_passthrough_mode?: CodexPassthroughMode
+  responses_upstream_transport?: ResponsesUpstreamTransport
   proxy_url: string
   custom_headers?: Record<string, string> | null
 }
@@ -987,6 +991,7 @@ export interface UpdateOpenAIResponsesAccountRequest {
   model_mapping?: string
   codex_client_metadata_mode?: CodexClientMetadataMode
   codex_passthrough_mode?: CodexPassthroughMode
+  responses_upstream_transport?: ResponsesUpstreamTransport
   proxy_url: string
   custom_headers?: Record<string, string> | null
 }

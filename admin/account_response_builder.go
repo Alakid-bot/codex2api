@@ -127,6 +127,10 @@ func (h *Handler) buildAccountResponse(
 	if isOpenAIResponsesAccount && includeDetails {
 		codexPassthroughMode = auth.NormalizeCodexPassthroughMode(row.GetCredential("codex_passthrough_mode"))
 	}
+	responsesUpstreamTransport := ""
+	if isOpenAIResponsesAccount && includeDetails {
+		responsesUpstreamTransport = auth.NormalizeOpenAIResponsesUpstreamTransport(row.GetCredential(auth.OpenAIResponsesUpstreamTransportCredentialKey))
+	}
 	balanceQueryURL := ""
 	if isOpenAIResponsesAccount && includeDetails {
 		balanceQueryURL = row.GetCredential(openAIResponsesBalanceQueryURLCredential)
@@ -254,6 +258,7 @@ func (h *Handler) buildAccountResponse(
 		ModelMapping:                 modelMapping,
 		CodexClientMetadataMode:      codexClientMetadataMode,
 		CodexPassthroughMode:         codexPassthroughMode,
+		ResponsesUpstreamTransport:   responsesUpstreamTransport,
 		CodexFingerprintMode:         codexFingerprintMode,
 		ClaudeFingerprintMode:        claudeFingerprintMode,
 		ClaudeUserAgent:              claudeUserAgent,
