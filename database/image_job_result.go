@@ -49,18 +49,21 @@ func (db *DB) ListImageGenerationJobResults(ctx context.Context, ids []int64, ap
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	jobs := make([]ImageGenerationJob, 0, len(ids))
 	for rows.Next() {
 		job, scanErr := scanImageGenerationJob(rows)
 		if scanErr != nil {
+			rows.Close()
 			return nil, scanErr
 		}
 		jobs = append(jobs, *job)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
+	// Release the first query before loading assets (SQLite may have one connection).
+	rows.Close()
 	if len(jobs) == 0 {
 		return jobs, nil
 	}

@@ -19,7 +19,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestImageQueueAcceptsFiftyWithoutFetchingOrKeySlots(t *testing.T) {
+func TestImageQueueAcceptsThousandWithoutFetchingOrKeySlots(t *testing.T) {
+	const jobCount = 1000
 	t.Setenv("IMAGE_JOB_WORKERS", "2")
 	db := newTestAdminDB(t)
 	if err := db.InitImageJobQueue(context.Background()); err != nil {
@@ -42,7 +43,7 @@ func TestImageQueueAcceptsFiftyWithoutFetchingOrKeySlots(t *testing.T) {
 	release := occupyAPIKeyConcurrency(t, p, "sk-queue")
 	defer release()
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := 0; i < jobCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -64,8 +65,8 @@ func TestImageQueueAcceptsFiftyWithoutFetchingOrKeySlots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Jobs) != 50 {
-		t.Fatalf("jobs=%d", len(page.Jobs))
+	if page.Total != jobCount {
+		t.Fatalf("jobs=%d", page.Total)
 	}
 	for _, job := range page.Jobs {
 		if job.Status != database.ImageJobQueued || !strings.Contains(job.ParamsJSON, "https://does-not-exist.invalid/ref.png") || strings.Contains(job.ParamsJSON, "base64,") {
@@ -74,9 +75,57 @@ func TestImageQueueAcceptsFiftyWithoutFetchingOrKeySlots(t *testing.T) {
 	}
 	// Reconstructing the handler must no longer fail queued jobs.
 	NewHandler(store, db, tc, nil, "")
-	ids, err := db.QueuedImageJobIDs(context.Background(), 100)
-	if err != nil || len(ids) != 50 {
+	ids, err := db.QueuedImageJobIDs(context.Background(), jobCount)
+	if err != nil || len(ids) != jobCount {
 		t.Fatalf("restart: %d %v", len(ids), err)
+	}
+}
+
+func TestImageQueueBoundsClaimedTasksWithThousandBacklog(t *testing.T) {
+	t.Setenv("IMAGE_JOB_WORKERS", "2")
+	t.Setenv("IMAGE_JOB_MEMORY_WORKERS", "1")
+	_, imageProxy, db := newExternalImageJobRouter(t, database.APIKeyLimits{MaxConcurrency: 1}, "sk-backlog")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	key, err := db.GetAPIKeyByValue(ctx, "sk-backlog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 1000; i++ {
+		if _, err := db.InsertImageGenerationJob(ctx, database.ImageGenerationJobInput{APIKeyID: key.ID, ParamsJSON: `{"prompt":"test","n":1,"model":"gpt-image-2"}`}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Hold the key so claimed workers wait without sending billable requests.
+	release := occupyAPIKeyConcurrency(t, imageProxy, "sk-backlog")
+	defer release()
+	h := &Handler{db: db, imageProxy: imageProxy}
+	if err := h.StartImageJobQueue(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		h.imageQueue.wg.Wait()
+		proxy.ConfigureImageExecutionLimit(0)
+		proxy.ConfigureImagePipeline(0)
+	})
+	// Observe multiple dispatch ticks: detached, unbounded workers would keep
+	// claiming more jobs while the first two are still waiting on this key.
+	deadline := time.Now().Add(3500 * time.Millisecond)
+	claimed := false
+	for time.Now().Before(deadline) {
+		ids, err := db.QueuedImageJobIDs(ctx, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ids) < 998 {
+			t.Fatalf("worker cap exceeded: %d claimed", 1000-len(ids))
+		}
+		claimed = claimed || len(ids) == 998
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !claimed {
+		t.Fatal("workers did not claim the backlog")
 	}
 }
 

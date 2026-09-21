@@ -12,12 +12,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestImageExecutionGateBoundsFiftyConcurrentJobs(t *testing.T) {
+func TestImageExecutionGateBoundsThousandConcurrentJobs(t *testing.T) {
 	ConfigureImageExecutionLimit(2)
 	defer ConfigureImageExecutionLimit(0)
 	var active, peak atomic.Int32
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 1000; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

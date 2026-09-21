@@ -27,15 +27,17 @@ type externalImageJobResult struct {
 }
 
 type externalImageJobResultAsset struct {
-	ID           int64  `json:"id"`
-	ProxyURL     string `json:"proxy_url"`
-	ThumbnailURL string `json:"thumbnail_url,omitempty"`
-	MimeType     string `json:"mime_type"`
-	Bytes        int    `json:"bytes"`
-	Width        int    `json:"width"`
-	Height       int    `json:"height"`
-	Model        string `json:"model"`
-	OutputFormat string `json:"output_format"`
+	ExpiresAt       int64  `json:"expires_at,omitempty"`
+	DeleteAfterRead bool   `json:"delete_after_read,omitempty"`
+	ID              int64  `json:"id"`
+	ProxyURL        string `json:"proxy_url"`
+	ThumbnailURL    string `json:"thumbnail_url,omitempty"`
+	MimeType        string `json:"mime_type"`
+	Bytes           int    `json:"bytes"`
+	Width           int    `json:"width"`
+	Height          int    `json:"height"`
+	Model           string `json:"model"`
+	OutputFormat    string `json:"output_format"`
 }
 
 type externalImageJobResultsRequest struct {
@@ -44,8 +46,8 @@ type externalImageJobResultsRequest struct {
 }
 
 type externalImageJobResultsResponse struct {
-	Jobs      []externalImageJobResult `json:"jobs"`
-	MissingIDs []int64                 `json:"missing_ids,omitempty"`
+	Jobs       []externalImageJobResult `json:"jobs"`
+	MissingIDs []int64                  `json:"missing_ids,omitempty"`
 }
 
 // GetExternalImageJobResult returns only status and output metadata. Inputs and
@@ -86,6 +88,7 @@ func (h *Handler) GetExternalImageJobResults(c *gin.Context) {
 		return
 	}
 	var request externalImageJobResultsRequest
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
 	if err := c.ShouldBindJSON(&request); err != nil {
 		writeExternalImageError(c, http.StatusBadRequest, "Invalid request: body must be valid JSON")
 		return
@@ -140,6 +143,7 @@ func imageJobResultPayload(job *database.ImageGenerationJob) externalImageJobRes
 	assets := make([]externalImageJobResultAsset, 0, len(job.Assets))
 	for _, asset := range job.Assets {
 		assets = append(assets, externalImageJobResultAsset{
+			ExpiresAt: asset.ExpiresAt, DeleteAfterRead: asset.DeleteAfterRead,
 			ID: asset.ID, ProxyURL: asset.ProxyURL, ThumbnailURL: asset.ThumbnailURL,
 			MimeType: asset.MimeType, Bytes: asset.Bytes, Width: asset.Width, Height: asset.Height,
 			Model: asset.Model, OutputFormat: asset.OutputFormat,

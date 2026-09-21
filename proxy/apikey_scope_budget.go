@@ -688,25 +688,6 @@ func (g *scopeBudgetGate) filter(inner auth.AccountFilter) auth.AccountFilter {
 	}
 }
 
-// imageFilter keeps static group/account budget exclusions but deliberately
-// ignores scope MaxConcurrency. Image generation has its own upstream health
-// and retry handling and must not be serialized by a configured chat scope.
-func (g *scopeBudgetGate) imageFilter(inner auth.AccountFilter) auth.AccountFilter {
-	if g == nil {
-		return inner
-	}
-	return func(account *auth.Account) bool {
-		if inner != nil && !inner(account) {
-			return false
-		}
-		if g.blocks(account) {
-			g.blocked.Add(1)
-			return false
-		}
-		return true
-	}
-}
-
 // exhaustedMessage 在「无可用账号」时返回 scope 预算耗尽的说明;本次请求没有任何候选
 // 因预算被剔除时返回 ""(说明确实是账号池本身没货,应沿用原有 503)。
 func (g *scopeBudgetGate) exhaustedMessage() string {
@@ -729,14 +710,6 @@ func (h *Handler) applyScopeBudgetFilter(c *gin.Context, filter auth.AccountFilt
 		return filter
 	}
 	return gate.filter(filter)
-}
-
-func (h *Handler) applyImageScopeBudgetFilter(c *gin.Context, filter auth.AccountFilter) auth.AccountFilter {
-	gate := scopeBudgetGateFromContext(c)
-	if gate == nil {
-		return filter
-	}
-	return gate.imageFilter(filter)
 }
 
 // scopeBudgetExhaustedMessage 返回本次请求因 scope 预算耗尽而剔除候选的说明,

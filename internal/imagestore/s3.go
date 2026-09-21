@@ -201,6 +201,7 @@ func parseS3Ref(ref string) (bucket, key string, err error) {
 // Compile-time interface check.
 var _ Backend = (*S3Backend)(nil)
 
+// SaveReader uploads an encoded image without allocating another image buffer.
 func (b *S3Backend) SaveReader(ctx context.Context, key string, source io.ReadSeeker, size int64, mime string) (string, error) {
 	if strings.TrimSpace(key) == "" {
 		return "", fmt.Errorf("empty image key")

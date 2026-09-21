@@ -39,6 +39,7 @@ func imageRetentionFromEnv() (imageRetention, error) {
 	return cfg, nil
 }
 
+// StartImageMaintenance schedules bounded expiration and orphan-file cleanup.
 func (h *Handler) StartImageMaintenance(ctx context.Context) error {
 	cfg, err := imageRetentionFromEnv()
 	if err != nil {
@@ -52,6 +53,7 @@ func (h *Handler) StartImageMaintenance(ctx context.Context) error {
 		// and retried hourly; no vacuum or full-table rewrite on the request path.
 		timer := time.NewTimer(time.Minute)
 		defer timer.Stop()
+		var nextFullSweep time.Time
 		for {
 			select {
 			case <-ctx.Done():
@@ -59,11 +61,18 @@ func (h *Handler) StartImageMaintenance(ctx context.Context) error {
 			case <-timer.C:
 			}
 			run, stop := context.WithTimeout(ctx, 5*time.Minute)
-			if err := h.cleanupImageStorage(run, cfg, time.Now()); err != nil {
-				log.Printf("[image-retention] cleanup failed: %v", err)
+			now := time.Now()
+			if err := h.cleanupDueImageAssets(run, now); err != nil {
+				log.Printf("[image-retention] caller expiry cleanup failed: %v", err)
+			}
+			if !now.Before(nextFullSweep) {
+				if err := h.cleanupImageStorage(run, cfg, now); err != nil {
+					log.Printf("[image-retention] cleanup failed: %v", err)
+				}
+				nextFullSweep = now.Add(time.Hour)
 			}
 			stop()
-			timer.Reset(time.Hour)
+			timer.Reset(time.Minute)
 		}
 	}()
 	log.Printf("[image-retention] configured assets_days=%d jobs_days=%d temporary_grace_hours=24", cfg.assets, cfg.jobs)

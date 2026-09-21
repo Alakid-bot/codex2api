@@ -73,7 +73,6 @@ func TestImagePipelineUploadsContinueWhileEarlierJobsWait(t *testing.T) {
 				results <- err
 				return
 			}
-			defer p.Close()
 			p.Output = func(_ context.Context, result QueuedImageResult) error {
 				bytes, err := io.ReadAll(result.File)
 				if err != nil {
@@ -89,6 +88,9 @@ func TestImagePipelineUploadsContinueWhileEarlierJobsWait(t *testing.T) {
 			if err == nil && (status != 200 || !strings.Contains(string(result), `"saved":true`) || strings.Contains(string(result), tinyPNGBase64)) {
 				err = fmt.Errorf("unexpected output %d", status)
 			}
+			// Completion includes cleanup; a buffered send before deferred Close
+			// lets the assertion race the final worker's file removal.
+			p.Close()
 			results <- err
 		}(int64(i))
 	}

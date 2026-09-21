@@ -157,7 +157,9 @@ func (h *Handler) savePipelineImage(ctx context.Context, id int64, req imageGene
 	if err != nil {
 		return warnings, err
 	}
-	_, err = h.db.InsertImageAsset(ctx, database.ImageAssetInput{JobID: id, TemplateID: req.TemplateID, Filename: filename, StoragePath: ref, MimeType: mime, Bytes: int(size), Width: width, Height: height, Model: firstNonEmpty(result.Model, req.Model), RequestedSize: req.Size, ActualSize: fmt.Sprintf("%dx%d", width, height), Quality: firstNonEmpty(result.Quality, req.Quality), OutputFormat: format, RevisedPrompt: result.RevisedPrompt})
+	input := database.ImageAssetInput{JobID: id, TemplateID: req.TemplateID, Filename: filename, StoragePath: ref, MimeType: mime, Bytes: int(size), Width: width, Height: height, Model: firstNonEmpty(result.Model, req.Model), RequestedSize: req.Size, ActualSize: fmt.Sprintf("%dx%d", width, height), Quality: firstNonEmpty(result.Quality, req.Quality), OutputFormat: format, RevisedPrompt: result.RevisedPrompt}
+	applyImageStoragePolicy(&input, req, time.Now())
+	_, err = h.db.InsertImageAsset(ctx, input)
 	if err != nil {
 		_ = backend.Delete(ctx, ref)
 		return warnings, err

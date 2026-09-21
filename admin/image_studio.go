@@ -56,21 +56,23 @@ type imagePromptTemplatePayload struct {
 }
 
 type imageGenerationJobPayload struct {
-	Prompt       string   `json:"prompt"`
-	Model        string   `json:"model"`
-	Size         string   `json:"size"`
-	Quality      string   `json:"quality"`
-	OutputFormat string   `json:"output_format"`
-	Background   string   `json:"background"`
-	Style        string   `json:"style"`
-	Upscale      string   `json:"upscale"`
-	StrictSize   *bool    `json:"strict_size,omitempty"`
-	UpscaleFit   string   `json:"upscale_fit,omitempty"`
-	N            int      `json:"n"`
-	APIKeyID     int64    `json:"api_key_id"`
-	TemplateID   int64    `json:"template_id"`
-	InputImages  []string `json:"input_images"`
-	External     bool     `json:"-"`
+	StorageMode      string   `json:"storage_mode,omitempty"`
+	RetentionSeconds int64    `json:"retention_seconds,omitempty"`
+	Prompt           string   `json:"prompt"`
+	Model            string   `json:"model"`
+	Size             string   `json:"size"`
+	Quality          string   `json:"quality"`
+	OutputFormat     string   `json:"output_format"`
+	Background       string   `json:"background"`
+	Style            string   `json:"style"`
+	Upscale          string   `json:"upscale"`
+	StrictSize       *bool    `json:"strict_size,omitempty"`
+	UpscaleFit       string   `json:"upscale_fit,omitempty"`
+	N                int      `json:"n"`
+	APIKeyID         int64    `json:"api_key_id"`
+	TemplateID       int64    `json:"template_id"`
+	InputImages      []string `json:"input_images"`
+	External         bool     `json:"-"`
 }
 
 func normalizeImageJobOutputCount(value int) (int, error) {
@@ -277,6 +279,10 @@ func (h *Handler) CreateImageGenerationJob(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "请求体无效")
 		return
 	}
+	if err := normalizeImageStoragePolicy(&req); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	if req.Prompt == "" {
 		writeError(c, http.StatusBadRequest, "提示词不能为空")
@@ -372,6 +378,10 @@ func (h *Handler) CreateImageEditJob(c *gin.Context) {
 	var req imageGenerationJobPayload
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, http.StatusBadRequest, "请求体无效")
+		return
+	}
+	if err := normalizeImageStoragePolicy(&req); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	req.Prompt = strings.TrimSpace(req.Prompt)
@@ -560,6 +570,9 @@ func (h *Handler) attachImageJobAssetCachePayload(job *database.ImageGenerationJ
 		return
 	}
 	for idx := range job.Assets {
+		if imageAssetExpired(&job.Assets[idx], time.Now()) {
+			continue
+		}
 		storagePath := strings.TrimSpace(job.Assets[idx].StoragePath)
 		if storagePath == "" {
 			continue
@@ -665,6 +678,11 @@ func (h *Handler) serveImageAssetFile(c *gin.Context, asset *database.ImageAsset
 		writeError(c, http.StatusNotFound, "图片文件不存在")
 		return
 	}
+	if imageAssetExpired(asset, time.Now()) {
+		c.Header("Cache-Control", "no-store")
+		writeError(c, http.StatusGone, "图片已过期")
+		return
+	}
 	if opts.requireAssetDir && !imageAssetPathAllowed(asset.StoragePath) {
 		writeError(c, http.StatusNotFound, "图片文件不存在")
 		return
@@ -677,7 +695,7 @@ func (h *Handler) serveImageAssetFile(c *gin.Context, asset *database.ImageAsset
 
 	c.Request.Header.Del("If-Modified-Since")
 	c.Request.Header.Del("If-None-Match")
-	if opts.private {
+	if opts.private || asset.ExpiresAt > 0 {
 		c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
 		c.Header("Pragma", "no-cache")
 		c.Header("Expires", "0")
@@ -692,13 +710,16 @@ func (h *Handler) serveImageAssetFile(c *gin.Context, asset *database.ImageAsset
 	filename := sanitizeDownloadFilename(asset.Filename)
 	if opts.thumbKB > 0 && !opts.download {
 		data, contentType, err := cachedImageThumbnail(c.Request.Context(), asset, backend, opts.thumbKB)
-		if err != nil {
-			writeError(c, http.StatusServiceUnavailable, "缩略图暂时不可用，请重试")
+		if err == nil {
+			c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, thumbnailFilename(filename)))
+			c.Data(http.StatusOK, contentType, data)
 			return
 		}
-		c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, thumbnailFilename(filename)))
-		c.Data(http.StatusOK, contentType, data)
-		return
+		// Preserve the original endpoint's full-image fallback for formats that
+		// cannot be thumbnailed. The source is streamed without pixel decoding.
+		if c.Request.Context().Err() != nil {
+			return
+		}
 	}
 
 	if strings.TrimSpace(asset.MimeType) != "" {
@@ -1441,6 +1462,7 @@ func (h *Handler) saveImageJobAssets(ctx context.Context, jobID int64, req image
 			OutputFormat:  format,
 			RevisedPrompt: strings.TrimSpace(item.Get("revised_prompt").String()),
 		}
+		applyImageStoragePolicy(&input, req, time.Now())
 		assetID, err := h.db.InsertImageAsset(ctx, input)
 		if err != nil {
 			_ = backend.Delete(ctx, storagePath)

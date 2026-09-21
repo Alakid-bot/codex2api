@@ -36,6 +36,8 @@ func (h *Handler) RegisterExternalImageRoutes(r *gin.Engine, imageProxy *proxy.H
 	v1.POST("/images/jobs/result", h.GetExternalImageJobResults)
 	v1.POST("/images/jobs/results", h.GetExternalImageJobResults)
 	v1.GET("/images/jobs/:id/result", h.GetExternalImageJobResult)
+	v1.GET("/images/jobs/:id/output", h.GetExternalImageJobOutput)
+	v1.POST("/images/jobs/:id/ack", h.AcknowledgeExternalImageJobOutput)
 }
 
 func (h *Handler) CreateExternalImageJob(c *gin.Context) {
@@ -107,12 +109,21 @@ func (h *Handler) CreateExternalImageJob(c *gin.Context) {
 	}
 
 	// Preflight the whole batch so one accepted job cannot cross an RPM/RPD
-	// boundary. Image execution itself is intentionally not gated by API-key
-	// concurrency; account health/cooldown and upstream limits remain active.
+	// boundary. Reserve concurrency before accepting a legacy asynchronous job.
 	if status, msg := imageProxy.EnforceAPIKeyLimitsForRequests(c, req.Model, req.N); status != 0 {
 		proxy.SendAPIKeyLimitError(c, status, msg)
 		return
 	}
+	releaseAPIKeyConcurrency, ok := imageProxy.AcquireAPIKeyConcurrency(c)
+	if !ok {
+		return
+	}
+	jobStarted := false
+	defer func() {
+		if !jobStarted && releaseAPIKeyConcurrency != nil {
+			releaseAPIKeyConcurrency()
+		}
+	}()
 	paramsJSON, _ := json.Marshal(req)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
@@ -145,7 +156,11 @@ func (h *Handler) CreateExternalImageJob(c *gin.Context) {
 		imageLogAPIKeyLabel(keyID, keyName, keyMasked),
 		len([]rune(req.Prompt)),
 	)
+	jobStarted = true
 	go func() {
+		if releaseAPIKeyConcurrency != nil {
+			defer releaseAPIKeyConcurrency()
+		}
 		opts := imageJobRunOptions{sharedAPIKeyConcurrency: true}
 		if editMode {
 			h.runImageEditJob(jobID, req, apiKey, opts)
@@ -192,6 +207,9 @@ func (h *Handler) GetExternalImageJob(c *gin.Context) {
 func normalizeExternalImageJobFields(req *imageGenerationJobPayload) (bool, error) {
 	if req == nil {
 		return false, fmt.Errorf("body is required")
+	}
+	if err := normalizeImageStoragePolicy(req); err != nil {
+		return false, err
 	}
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	if req.Prompt == "" {

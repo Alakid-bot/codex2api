@@ -105,7 +105,7 @@ func (db *DB) ListImageJobSummaries(ctx context.Context, page, pageSize int, key
 }
 
 func (db *DB) ExpiredImageAssets(ctx context.Context, cutoff time.Time, after int64, limit int) ([]ImageAsset, error) {
-	rows, err := db.conn.QueryContext(ctx, imageAssetSelectSQL("a")+` JOIN image_generation_jobs j ON j.id=a.job_id WHERE a.created_at<$1 AND a.id>$2 AND j.status IN ('succeeded','failed') ORDER BY a.id LIMIT $3`, db.imageRetentionCutoff(cutoff), after, limit)
+	rows, err := db.conn.QueryContext(ctx, imageAssetSelectSQL("a")+` JOIN image_generation_jobs j ON j.id=a.job_id WHERE a.expires_at=0 AND a.created_at<$1 AND a.id>$2 AND j.status IN ('succeeded','failed') ORDER BY a.id LIMIT $3`, db.imageRetentionCutoff(cutoff), after, limit)
 	if err != nil {
 		return nil, err
 	}

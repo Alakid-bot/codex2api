@@ -569,7 +569,7 @@ export const api = {
   },
   getPortalImageJob: (apiKey: string, id: number, params: { includeCache?: boolean; summary?: boolean } = {}) => {
     const sp = new URLSearchParams()
-    if (params.summary !== false) sp.set('summary', '1')
+    if (params.summary === true || (params.summary !== false && !params.includeCache)) sp.set('summary', '1')
     if (params.includeCache) sp.set('include_cache', '1')
     const query = sp.toString()
     return requestImageStudioPortal<ImageJobResponse>(`/jobs/${id}${query ? `?${query}` : ''}`, apiKey)
@@ -1250,7 +1250,7 @@ export const api = {
   },
   getImageJob: (id: number, params: { includeCache?: boolean; summary?: boolean } = {}) => {
     const sp = new URLSearchParams()
-    if (params.summary !== false) sp.set('summary', '1')
+    if (params.summary === true || (params.summary !== false && !params.includeCache)) sp.set('summary', '1')
     if (params.includeCache) sp.set('include_cache', '1')
     const query = sp.toString()
     return request<ImageJobResponse>(`/images/jobs/${id}${query ? `?${query}` : ''}`)

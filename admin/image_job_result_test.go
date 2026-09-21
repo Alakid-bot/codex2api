@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -163,5 +164,39 @@ func TestImageJobResultPayloadExcludesCachedImagesAndPrompts(t *testing.T) {
 	assertImageJobResultFields(t, body)
 	if strings.Contains(string(body), "secret") {
 		t.Fatal("private fields leaked into result")
+	}
+}
+
+func TestExternalImageJobBatchResultsOwnershipAndBounds(t *testing.T) {
+	router, _, db := newExternalImageJobRouter(t, database.APIKeyLimits{}, "sk-batch-owner")
+	ctx := context.Background()
+	key, err := db.GetAPIKeyByValue(ctx, "sk-batch-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerID, err := db.InsertImageGenerationJob(ctx, database.ImageGenerationJobInput{APIKeyID: key.ID, Prompt: "private", ParamsJSON: `{"input_images":["secret-base64"]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherID, err := db.InsertImageGenerationJob(ctx, database.ImageGenerationJobInput{APIKeyID: key.ID + 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, endpoint := range []string{"/v1/images/jobs/results", "/v1/images/jobs/result"} {
+		body := fmt.Sprintf(`{"ids":[%d,%d,%d]}`, ownerID, otherID, ownerID)
+		w := retentionRequest(router, "POST", endpoint, "sk-batch-owner", strings.NewReader(body))
+		var result externalImageJobResultsResponse
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &result) != nil || len(result.Jobs) != 1 || result.Jobs[0].ID != ownerID || len(result.MissingIDs) != 1 || result.MissingIDs[0] != otherID {
+			t.Fatal("invalid batch", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "secret-base64") || strings.Contains(w.Body.String(), "params_json") {
+			t.Fatal("batch leaked input")
+		}
+	}
+	for _, body := range []string{`{"ids":[]}`, `{"ids":[0]}`, `{"ids":[` + strings.Repeat("1,", 500) + `1]}`, `{"ids":[1],"padding":"` + strings.Repeat("a", 33<<10) + `"}`} {
+		w := retentionRequest(router, "POST", "/v1/images/jobs/results", "sk-batch-owner", strings.NewReader(body))
+		if w.Code != http.StatusBadRequest {
+			t.Fatal("accepted invalid batch", w.Code)
+		}
 	}
 }

@@ -148,7 +148,11 @@ function hasServerImageURL(asset: ImageAsset): boolean {
 }
 
 function imageSrc(asset: ImageAsset, localURLs: Record<number, string>): string {
-  return asset.thumbnail_url || asset.proxy_url || localURLs[asset.id] || ''
+  return asset.proxy_url || localURLs[asset.id] || asset.thumbnail_url || ''
+}
+
+function thumbnailSrc(asset: ImageAsset, localURLs: Record<number, string>): string {
+  return asset.thumbnail_url || imageSrc(asset, localURLs)
 }
 
 function blobToDataURL(blob: Blob): Promise<string> {
@@ -1323,7 +1327,7 @@ export default function ImageStudioPortal() {
                 <div className="portal-recent-grid">
                   {historyJobs.slice(0, RECENT_JOB_COUNT).map(job => {
                     const asset = job.assets?.[0]
-                    const src = asset ? imageSrc(asset, assetURLs) : ''
+                    const src = asset ? thumbnailSrc(asset, assetURLs) : ''
                     return <Button key={job.id} type="button" variant="ghost" className="portal-recent-item" onClick={() => { setCurrentJob(job); setInspirationOpen(false); selectMobilePanel('canvas') }}>
                       <span className="portal-recent-thumb">{src ? <img loading="lazy" decoding="async" src={src} alt="" /> : <ImageIcon className="size-4" />}</span>
                       <span className="portal-recent-description"><span>{job.prompt}</span><small><span className={cn('portal-status-dot', `portal-status-${job.status}`)} />{statusLabel(job.status)}</small></span>
@@ -1371,7 +1375,7 @@ export default function ImageStudioPortal() {
                 <div className="space-y-2">
                   {historyJobs.map((job) => {
                     const thumb = job.assets?.[0]
-                    const thumbSrc = thumb ? imageSrc(thumb, assetURLs) : ''
+                    const thumbSrc = thumb ? thumbnailSrc(thumb, assetURLs) : ''
                     const canPreview = Boolean(thumb)
                     return (
                       <div
@@ -1496,7 +1500,7 @@ export default function ImageStudioPortal() {
               ) : (
                 <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                   {assets.map((asset) => {
-                    const src = imageSrc(asset, assetURLs)
+                    const src = thumbnailSrc(asset, assetURLs)
                     return (
                       <div
                         key={asset.id}
@@ -1595,7 +1599,7 @@ export default function ImageStudioPortal() {
 
       <PortalImagePreviewDialog
         asset={previewAsset}
-        imageURL={previewAsset ? (previewAsset.proxy_url || assetURLs[previewAsset.id] || previewAsset.thumbnail_url) : undefined}
+        imageURL={previewAsset ? imageSrc(previewAsset, assetURLs) : undefined}
         prompt={previewPrompt}
         open={Boolean(previewAsset)}
         onClose={closePreview}
@@ -1642,7 +1646,7 @@ export default function ImageStudioPortal() {
             ) : (
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                 {assets.map((asset) => {
-                  const src = imageSrc(asset, assetURLs)
+                  const src = thumbnailSrc(asset, assetURLs)
                   const selected = galleryPickerSelected.has(asset.id)
                   return (
                     <button
