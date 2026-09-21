@@ -7617,6 +7617,55 @@ func (s *Store) UsageLimitedCandidateSummary(apiKeyID int64, exclude map[int64]b
 	return summary
 }
 
+// CapacitySaturatedCandidateSummary reports a pool that still has matching
+// accounts, but every one of them is already at its concurrency limit.
+// Disabled, cooling, filtered-out and zero-limit accounts are ignored, so a
+// genuinely empty pool stays a no-available-account failure.
+type CapacitySaturatedCandidateSummary struct {
+	Found bool
+}
+
+func (s *Store) CapacitySaturatedCandidateSummary(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) CapacitySaturatedCandidateSummary {
+	var summary CapacitySaturatedCandidateSummary
+	if s == nil {
+		return summary
+	}
+	filter = s.withUsableEgressFilter(filter)
+	maxConcurrency := atomic.LoadInt64(&s.maxConcurrency)
+	saturated := 0
+	for _, acc := range s.accountSnapshotAccounts() {
+		if acc == nil || (exclude != nil && exclude[acc.DBID]) {
+			continue
+		}
+		if !acc.dispatchableForPolicy(policy) {
+			continue
+		}
+		if policy == DispatchPolicyStandard && s.GetLazyMode() && !s.accountLazySelectable(acc) {
+			continue
+		}
+		if s.accountHasBlockingCachedCooldown(acc, policy) {
+			continue
+		}
+		if !s.accountAllowedForAPIKey(acc, apiKeyID) {
+			continue
+		}
+		if filter != nil && !filter(acc) {
+			continue
+		}
+		_, _, _, limit := acc.schedulerSnapshotForPolicy(maxConcurrency, policy)
+		if limit <= 0 {
+			continue
+		}
+		// A free slot means selection failed for some other reason.
+		if accountOccupiedRequests(acc) < limit {
+			return summary
+		}
+		saturated++
+	}
+	summary.Found = saturated > 0
+	return summary
+}
+
 func (s *Store) hasContinuationCandidateWithFilter(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter) bool {
 	return s.hasContinuationCandidateWithDispatch(key, apiKeyID, exclude, filter, DispatchPolicyStandard)
 }

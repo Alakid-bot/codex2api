@@ -2680,6 +2680,7 @@ curl -X DELETE http://localhost:8080/api/admin/images/jobs/1 \
 | server_error                     | 服务器错误       | 查看日志排查问题                 |
 | upstream_error                   | 上游服务错误     | 检查 Codex 服务状态              |
 | no_available_account             | 当前无可调度账号 | 稍后重试、启用账号或补充可用账号 |
+| account_pool_concurrency_saturated | 匹配账号的并发窗口已满 | 稍后重试，或提高单账号并发上限 |
 | account_pool_usage_limit_reached | 账号池额度耗尽   | 等待冷却或添加新账号             |
 | rate_limit_exceeded              | 限流触发         | 降低请求频率                     |
 | response_context_unavailable     | `previous_response_id` 所需上下文不可用 | 重新发送完整上下文或开始新的响应链 |
@@ -2796,6 +2797,18 @@ Responses WebSocket 升级后用对应错误帧返回拒绝信息，每个 `resp
     "message": "无可用账号，请稍后重试",
     "type": "server_error",
     "code": "no_available_account"
+  }
+}
+```
+
+匹配账号都在、只是并发槽位已经占满时，接口仍返回 `503`，但错误码改为 `account_pool_concurrency_saturated`，并带 `Retry-After: 1`。这和「池里没有可调度账号」不是同一种失败：提高并发上限，或等进行中的请求释放槽位后再试。
+
+```json
+{
+  "error": {
+    "message": "账号并发窗口已满，请稍后重试或提高并发上限",
+    "type": "server_error",
+    "code": "account_pool_concurrency_saturated"
   }
 }
 ```

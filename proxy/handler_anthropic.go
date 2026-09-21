@@ -616,6 +616,14 @@ func (h *Handler) Messages(c *gin.Context) {
 				sendAnthropicError(c, http.StatusTooManyRequests, "rate_limit_error", msg)
 				return
 			}
+			if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), accountFilter, auth.DispatchPolicyStandard) {
+				setConcurrencySaturatedRetryAfter(c)
+				if isStream && writeCommittedAnthropicRetryError(c, "overloaded_error", concurrencySaturatedMessageEN) {
+					return
+				}
+				sendAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", concurrencySaturatedMessageEN)
+				return
+			}
 			if isStream && writeCommittedAnthropicRetryError(c, "overloaded_error", noAvailableAnthropicAccountMessage(effectiveModel)) {
 				return
 			}

@@ -665,6 +665,34 @@ func noAvailableAccountError(model string) gin.H {
 	}
 }
 
+const (
+	concurrencySaturatedMessageZH = "账号并发窗口已满，请稍后重试或提高并发上限"
+	concurrencySaturatedMessageEN = "Account concurrency window is full; retry later or raise the concurrency limit"
+)
+
+func concurrencySaturatedError() gin.H {
+	return gin.H{
+		"error": gin.H{
+			"message": concurrencySaturatedMessageZH,
+			"type":    ErrorTypeServerError,
+			"code":    ErrorCodeAccountPoolConcurrencySaturated,
+		},
+	}
+}
+
+func (h *Handler) accountPoolConcurrencySaturated(apiKeyID int64, exclude map[int64]bool, filter auth.AccountFilter, policy auth.DispatchPolicy) bool {
+	if h == nil || h.store == nil {
+		return false
+	}
+	return h.store.CapacitySaturatedCandidateSummary(apiKeyID, exclude, filter, policy).Found
+}
+
+func setConcurrencySaturatedRetryAfter(c *gin.Context) {
+	if c != nil && !c.Writer.Written() {
+		c.Header("Retry-After", "1")
+	}
+}
+
 func usageLogErrorMessage(statusCode int, body []byte) string {
 	return usageLogErrorMessageImpl(statusCode, body, false)
 }
@@ -4070,6 +4098,14 @@ func (h *Handler) Responses(c *gin.Context) {
 				sendResponseContextUnavailable(c, continuationStatus, continuationReason)
 				return
 			}
+			if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
+				setConcurrencySaturatedRetryAfter(c)
+				if isStream && writeCommittedResponsesRetryError(c, concurrencySaturatedMessageZH) {
+					return
+				}
+				c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
+				return
+			}
 			if isStream && writeCommittedResponsesRetryError(c, noAvailableAccountMessage(effectiveModel)) {
 				return
 			}
@@ -6020,6 +6056,11 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					sendCompactionUpstreamUnavailable(c)
 					return
 				}
+				if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
+					setConcurrencySaturatedRetryAfter(c)
+					c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
+					return
+				}
 				c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(effectiveModel))
 				return
 			}
@@ -6829,6 +6870,14 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					return
 				}
 				SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg)
+				return
+			}
+			if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
+				setConcurrencySaturatedRetryAfter(c)
+				if isStream && writeCommittedChatRetryError(c, concurrencySaturatedMessageZH) {
+					return
+				}
+				c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
 				return
 			}
 			if isStream && writeCommittedChatRetryError(c, noAvailableAccountMessage(effectiveModel)) {
