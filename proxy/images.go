@@ -1579,13 +1579,17 @@ func imagePreferredAccountFilter(account *auth.Account) bool {
 // 无指纹分流同样要覆盖两层：否则生图流量既能落到分流组账号上，无指纹的生图请求
 // 又不会被关进分流组，两个方向都跟配置意图相反。
 func (h *Handler) nextImageAccount(c *gin.Context, apiKeyID int64, exclude map[int64]bool, model string, identity requestSessionIdentity) (*auth.Account, string) {
-	preferredFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(model, imagePreferredAccountFilter))
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	preferredFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(ctx, model, imagePreferredAccountFilter))
 	preferredFilter = h.applyScopeBudgetFilter(c, preferredFilter)
 	account, stickyProxyURL := h.nextAccountForSessionWithFilter("", apiKeyID, exclude, preferredFilter)
 	if account != nil {
 		return account, stickyProxyURL
 	}
-	fallbackFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(model, imageCapableAccountFilter))
+	fallbackFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(ctx, model, imageCapableAccountFilter))
 	return h.nextAccountForSessionWithFilter("", apiKeyID, exclude, h.applyScopeBudgetFilter(c, fallbackFilter))
 }
 
@@ -1661,7 +1665,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		if sameAccountRetryID > 0 {
 			preferredID := sameAccountRetryID
 			sameAccountRetryID = 0
-			preferredFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(requestModel, imageCapableAccountFilter))
+			preferredFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(c.Request.Context(), requestModel, imageCapableAccountFilter))
 			preferredFilter = h.applyScopeBudgetFilter(c, preferredFilter)
 			account = h.store.TakePreferredAccountWithDispatch(preferredID, apiKeyID, nil, preferredFilter, dispatchPolicyForModel(requestModel))
 			if account != nil {
@@ -1684,7 +1688,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			if continuousRetryCommitExpired(c, continuousRetryProtocolResponses) {
 				return
 			}
-			waitFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(requestModel, imageCapableAccountFilter))
+			waitFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(c.Request.Context(), requestModel, imageCapableAccountFilter))
 			var selectionErr error
 			account, stickyProxyURL, selectionErr = h.waitForRetryAccountAvailable(c.Request.Context(), "", apiKeyID, retryExclusions.ForSelection(), h.applyScopeBudgetFilter(c, waitFilter), false, dispatchPolicyForModel(requestModel))
 			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolResponses) {

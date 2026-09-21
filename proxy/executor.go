@@ -526,6 +526,11 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = BeginCodexTurnStateTemplateAttempt(ctx)
+	headers = headers.Clone()
+	if headers == nil {
+		headers = make(http.Header)
+	}
 	resetUpstreamUserAgentAudit(ctx)
 	resetWsAcquireAudit(ctx)
 	var encryptedAttempt *encryptedContentAttempt
@@ -565,6 +570,10 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		apiKey: apiKey, deviceCfg: deviceCfg, headers: headers,
 	})
 	defer func() { telemetryAttempt.observeResult(upstreamResponse, upstreamErr) }()
+	if dedicated := CodexTurnStateRefreshProxy(ctx, account); dedicated != "" {
+		proxyOverride = dedicated
+	}
+
 	// 凭据级 turn state 强制注入：模型已由入口映射/规则定稿，传输方式也已定。
 	// 未配置的账号这里是空操作。
 	ctx, requestBody, headers = prepareCodexTurnStateInjection(ctx, account, requestBody, headers, wantWebsocket && WebsocketExecuteFunc != nil)
@@ -694,7 +703,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	}
 
 	// 出口链路统一由 ResolveCodexEgress 决定(Resin > 代理 > 直连,见 egress.go)。
-	egress := ResolveCodexEgress(account, endpoint, proxyURL)
+	egress := ResolveCodexRequestEgress(ctx, account, endpoint, proxyURL, false)
 	endpoint = egress.URL
 	client := egress.Client()
 
@@ -733,8 +742,13 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		}
 
 		// ==================== 请求头（伪装 Codex CLI） ====================
-		applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers)
-		// 凭据级 turn state 注入在账号自定义头之后落定：自定义头不该顶掉它。
+		// Outbound turn-state order: Guard (caller) → auto template Apply →
+		// account custom headers → manual credential inject last (ops override).
+		// 按最终请求体中的精确上游 model 查找模板。
+		outboundHeaders := headers.Clone()
+		ApplyCodexTurnStateTemplate(ctx, outboundHeaders, account, strings.TrimSpace(gjson.GetBytes(requestBody, "model").String()))
+		applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, outboundHeaders)
+		// 凭据级 turn state 注入在账号自定义头之后落定：自定义头与自动模板都不该顶掉它。
 		applyCodexTurnStateInjectionHeader(ctx, req.Header)
 		// Content-Encoding 在通用头装配之后设置：真实客户端也是在编码完成时才补这个头
 		// （codex-rs/http-client/src/request.rs prepare_encoded_json），且账号自定义头
@@ -775,6 +789,8 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 			}
 			return nil, ErrUpstream(0, "请求上游失败", err)
 		}
+		ConfirmCodexTurnStateTemplate(ctx, req.Header, account, gjson.GetBytes(requestBody, "model").String())
+		CaptureCodexTurnStateTemplate(ctx, account, gjson.GetBytes(requestBody, "model").String(), resp.Header)
 		return resp, nil
 	}
 
@@ -1013,6 +1029,11 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = BeginCodexTurnStateTemplateAttempt(ctx)
+	headers = headers.Clone()
+	if headers == nil {
+		headers = make(http.Header)
+	}
 	resetUpstreamUserAgentAudit(ctx)
 	resetWsAcquireAudit(ctx)
 	var encryptedAttempt *encryptedContentAttempt
@@ -1075,6 +1096,8 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 		return nil, ErrInternalError("创建请求失败", err)
 	}
 
+	// compact: same order — template Apply then manual credential inject last.
+	ApplyCodexTurnStateTemplate(ctx, headers, account, strings.TrimSpace(gjson.GetBytes(requestBody, "model").String()))
 	applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers)
 	applyCodexTurnStateInjectionHeader(ctx, req.Header)
 	// routing hint 由网关按最终出站 body 合成，须在账号自定义头之后设置。
@@ -1094,6 +1117,8 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 		return nil, ErrUpstream(0, "请求上游失败", err)
 	}
 
+	ConfirmCodexTurnStateTemplate(ctx, req.Header, account, gjson.GetBytes(requestBody, "model").String())
+	CaptureCodexTurnStateTemplate(ctx, account, gjson.GetBytes(requestBody, "model").String(), resp.Header)
 	return resp, nil
 }
 
