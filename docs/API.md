@@ -395,7 +395,12 @@ Images 入口的 2.5 token 计费区分文本输入、图片输入与各自缓�
 
 - `POST /v1/images/jobs`：以后台创建的 API Key 认证，返回 HTTP 202 和 `job`。
 - `GET /v1/images/jobs/:id`：使用创建时的同一 API Key 查询，其他密钥返回 404。
+- `POST /v1/images/jobs/results`：批量查询最多 500 个任务的精简结果，兼容 `/v1/images/jobs/result`。
+- `GET /v1/images/jobs/:id/output`：流式返回生成结果 Base64；仅对主动选择 `delete_after_read` 的图片在完整交付后清理。
+- `POST /v1/images/jobs/:id/ack`：URL 下载方确认已保存结果，幂等清理本任务中 `delete_after_read` 的图片。
 - `GET /v1/images/jobs/:id/result`：使用同一 API Key 查询精简状态和结果；不返回提示词、`params_json`、输入图片、密钥展示信息或图片 Base64 缓存。适合频繁轮询，原创建和查询接口保持不变。
+
+创建接口可选 `storage_mode`（legacy/temporary/delete_after_read）与 `retention_seconds`；不传保留旧逻辑。临时存储 2 小时示例：`"storage_mode":"temporary","retention_seconds":7200`。详见 [图片结果存储策略](IMAGE_RESULT_STORAGE.md)，包括过期时间、消费接口和安全重试语义。
 
 精简查询在 queued/running 时也返回 HTTP 200，`assets` 为空数组；成功后通过 `job.assets[].proxy_url` 下载图片文件，相对路径按服务地址解析。失败原因在 `error_message`，部分成功的提示在 `warning`。该接口忽略 `include_cache`，始终不附带图片缓存。不存在或不属于当前 Key 的任务均返回 404。
 
@@ -2821,3 +2826,8 @@ Retry-After: 3600
 2. 实现指数退避重试策略
 3. 处理 429/503 状态码，根据 `Retry-After` 等待后重试
 4. 避免在短时内发送大量请求
+
+
+### 可选的持久化生图队列
+
+设置 `IMAGE_JOB_WORKERS=2` 可启用固定并发的数据库任务队列。启用后创建接口只返回 `job.id` 和 `job.status`；参考图在任务执行时读取。数据库增量迁移、内存限制、重启恢复及兼容性详见 [图片任务队列](IMAGE_JOB_QUEUE.md)。
