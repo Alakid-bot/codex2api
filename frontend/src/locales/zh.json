@@ -2612,7 +2612,7 @@
     "actualTier": "上游回传 Tier",
     "billingTier": "计费模式",
     "billingTierStandard": "Standard",
-    "billingTierFast": "⚡ Fast",
+    "billingTierFast": "Fast",
     "billingContext": "上下文计费",
     "billingContextLong": "Long context（输入 {{input}} > {{threshold}}）",
     "statusErrorDetails": "错误详情",

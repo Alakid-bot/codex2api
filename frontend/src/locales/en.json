@@ -2612,7 +2612,7 @@
     "actualTier": "Upstream-reported Tier",
     "billingTier": "Billing Tier",
     "billingTierStandard": "Standard",
-    "billingTierFast": "⚡ Fast",
+    "billingTierFast": "Fast",
     "billingContext": "Billing Context",
     "billingContextLong": "Long context (input {{input}} > {{threshold}})",
     "statusErrorDetails": "Error Details",
