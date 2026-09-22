@@ -2087,6 +2087,7 @@ export default function Settings() {
     { label: t('accounts.codexFingerprintModeOff'), value: 'off' },
     { label: t('accounts.codexFingerprintModeDevice'), value: 'device' },
     { label: t('accounts.codexFingerprintModeSession'), value: 'session' },
+    { label: t('accounts.codexFingerprintModeSessionIdentity'), value: 'single_machine_multi_window' },
     { label: t('accounts.codexFingerprintModeFull'), value: 'full' },
   ]
   const modelCooldownModeOptions = [

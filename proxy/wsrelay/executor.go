@@ -208,6 +208,9 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	// comments above are unchanged.
 	baseKey = reusablePoolBaseKeyWithModel(baseKey, gjson.GetBytes(wsBody, "model").String())
 	if wc == nil {
+		// A pooled handshake must belong to the same mapped conversation/thread.
+		poolSessionID = proxy.ScopeCodexFingerprintTransportKey(poolSessionID, account, ginHeaders)
+		baseKey = proxy.ScopeCodexFingerprintTransportKey(baseKey, account, ginHeaders)
 		if proxy.IsStatelessWebsocketSessionID(sessionID) && baseKey != "" && !statelessOneShotEnabled() {
 			wc, pr, poolSessionID, err2 = e.manager.AcquireReusableConnection(ctx, account, wsURL, baseKey, sessionID, statelessConnectionSlots(), headers, proxyOverride)
 		} else {
@@ -427,9 +430,7 @@ func (e *Executor) prepareWebsocketHeaders(ctx context.Context, accessToken stri
 	// （codex-rs/core/src/client.rs build_websocket_headers）与 HTTP /responses 同形，
 	// 都是 session-id / thread-id / x-client-request-id，也都不发 Conversation_id。
 	// legacy 档下该函数恢复旧的 Session_id + 清 Conversation_id 行为。
-	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
-		proxy.ApplyCodexSessionHeaders(headers, account, sessionID, ginHeaders, true)
-	}
+	proxy.ApplyCodexSessionHeaders(headers, account, sessionID, ginHeaders, true)
 	for name, value := range account.GetCustomHeaders() {
 		name = strings.TrimSpace(name)
 		if name == "" {

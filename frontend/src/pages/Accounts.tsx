@@ -683,6 +683,7 @@ function codexFingerprintModeOptions(
     { value: "off", label: t("accounts.codexFingerprintModeOff") },
     { value: "device", label: t("accounts.codexFingerprintModeDevice") },
     { value: "session", label: t("accounts.codexFingerprintModeSession") },
+    { value: "single_machine_multi_window", label: t("accounts.codexFingerprintModeSessionIdentity") },
     { value: "full", label: t("accounts.codexFingerprintModeFull") },
   ];
 }
@@ -694,6 +695,8 @@ function codexFingerprintModeDetail(
   switch (mode) {
     case "device":
       return t("accounts.codexFingerprintModeDeviceDetail");
+    case "single_machine_multi_window":
+      return t("accounts.codexFingerprintModeSessionIdentityDetail");
     case "session":
       return t("accounts.codexFingerprintModeSessionDetail");
     case "full":

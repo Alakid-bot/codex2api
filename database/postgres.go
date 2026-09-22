@@ -1532,7 +1532,8 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_before_expiry_min INT DEFAULT 60;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_activate_5h_window_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS utls_shutdown_timeout_minutes INT DEFAULT 30;
-	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_fingerprint_default_mode VARCHAR(20) DEFAULT 'off';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_fingerprint_default_mode VARCHAR(64) DEFAULT 'off';
+	ALTER TABLE system_settings ALTER COLUMN codex_fingerprint_default_mode TYPE VARCHAR(64);
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_bytes BIGINT NOT NULL DEFAULT 67108864;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_entry_bytes BIGINT NOT NULL DEFAULT 8388608;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_reconstruct_max_bytes BIGINT NOT NULL DEFAULT 67108864;
@@ -2927,11 +2928,13 @@ func continuousRetryPolicySelectQuery(forUpdate bool) string {
 	return query
 }
 
-// NormalizeCodexFingerprintDefaultMode 把新账号默认指纹收敛档位归一到四个已知
+// NormalizeCodexFingerprintDefaultMode 把新账号默认指纹收敛档位归一到已知
 // 取值之一；空值和非法值回落 off（与 auth.NormalizeCodexFingerprintMode 语义一致，
 // database 包不能反向依赖 auth，故此处独立实现）。
 func NormalizeCodexFingerprintDefaultMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "single_machine_multi_window":
+		return "single_machine_multi_window"
 	case "device":
 		return "device"
 	case "session":
