@@ -1783,13 +1783,20 @@ export default function Usage() {
   }, [buildDimensionFilterParams, filterStatus, filterErrorKind])
 
   // 选中某个账号(或密钥/模型/搜索)后,卡片只统计命中的请求;累计字段始终全局。
+  // 若 loadStats 依赖 buildDimensionFilterParams,则每次筛选变化都会让 useDataLoader
+  // 以非静默方式自动重跑,把整页换成骨架屏、卸载搜索框并丢失焦点,表现为"每输入一个字都像刷新页面"。
+  // 因此 loadStats 保持稳定引用(从 ref 读取最新筛选),首次加载仍走全页骨架屏,
+  // 后续筛选变化由下方 useEffect 用 reloadSilently 原地静默刷新,搜索框焦点不丢失。
+  const statsFilterParamsRef = useRef(buildDimensionFilterParams)
+  statsFilterParamsRef.current = buildDimensionFilterParams
+
   const loadStats = useCallback(async () => {
     const [stats, settings] = await Promise.all([
-      api.getUsageStats(buildDimensionFilterParams()),
+      api.getUsageStats(statsFilterParamsRef.current()),
       api.getSettings().catch((): SystemSettings | null => null),
     ])
     return { stats, settings }
-  }, [buildDimensionFilterParams])
+  }, [])
 
   const { data, loading, error, reload, reloadSilently } = useDataLoader<{
     stats: UsageStats | null
@@ -1798,6 +1805,17 @@ export default function Usage() {
     initialData: { stats: null, settings: null },
     load: loadStats,
   })
+
+  // 维度筛选(时间范围/账号/密钥/模型/端点/搜索/形态)变化时,静默原地刷新统计卡片:
+  // 保留页面与搜索框焦点,避免整页骨架屏闪烁;首次加载已由 useDataLoader 全页骨架屏承担。
+  const statsFiltersFirstRunRef = useRef(true)
+  useEffect(() => {
+    if (statsFiltersFirstRunRef.current) {
+      statsFiltersFirstRunRef.current = false
+      return
+    }
+    void reloadSilently()
+  }, [buildDimensionFilterParams, reloadSilently])
 
   // 服务端分页加载日志
   const loadLogs = useCallback(async () => {
