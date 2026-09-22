@@ -123,7 +123,7 @@ function UpstreamResponseModelBadge({
   }
   return (
     <div
-      className="break-all pl-3 text-[11px]"
+      className="w-full break-all pl-3 text-[11px]"
       title={titleLines.join('\n')}
     >
       <span className="mr-1 text-muted-foreground">↳ {t('usage.upstreamResponseModel')}:</span>
@@ -2628,9 +2628,6 @@ export default function Usage() {
                               {log.model || '-'}
                             </Badge>
                           )}
-                          {log.upstream_model_mismatch === true && log.upstream_response_model && (
-                            <UpstreamResponseModelBadge log={log} sentModel={log.effective_model || log.model} />
-                          )}
                           {log.reasoning_effort ? (
                             <ReasoningEffortBadge effort={log.reasoning_effort} />
                           ) : null}
@@ -2649,6 +2646,9 @@ export default function Usage() {
                             hasCompactionHistory={log.has_compaction_history}
                           />
                           <InternalRequestBadge log={log} />
+                          {log.upstream_model_mismatch === true && log.upstream_response_model && (
+                            <UpstreamResponseModelBadge log={log} sentModel={log.effective_model || log.model} />
+                          )}
                         </div>
                         {visibleColumns.time && (
                           <div className="shrink-0 whitespace-nowrap text-right text-[11px] tabular-nums text-muted-foreground">
@@ -2864,9 +2864,6 @@ export default function Usage() {
                                 → {log.effective_model}
                               </Badge>
                             )}
-                            {log.upstream_model_mismatch === true && log.upstream_response_model && (
-                              <UpstreamResponseModelBadge log={log} sentModel={log.effective_model || log.model} />
-                            )}
                             {log.reasoning_effort ? (
                               <ReasoningEffortBadge effort={log.reasoning_effort} />
                             ) : null}
@@ -2882,6 +2879,9 @@ export default function Usage() {
                                 <Zap className="size-3" />
                                 {formatServiceTierLabel(t, log.billing_service_tier || log.service_tier)}
                               </Badge>
+                            )}
+                            {log.upstream_model_mismatch === true && log.upstream_response_model && (
+                              <UpstreamResponseModelBadge log={log} sentModel={log.effective_model || log.model} />
                             )}
                           </div>
                         </TableCell>}
