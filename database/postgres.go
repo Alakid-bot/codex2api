@@ -29,6 +29,8 @@ const grokStateBackfillInitTimeout = 5 * time.Minute
 
 // AccountRow 数据库中的账号行
 type AccountRow struct {
+	GrokPlanDisplay         *GrokPlanDisplay
+	GrokModels              *GrokModelSummary
 	ID                      int64
 	CredentialGeneration    int64
 	CredentialFamilyID      string

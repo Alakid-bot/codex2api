@@ -384,6 +384,8 @@ func FetchGrokModelCatalog(ctx context.Context, account *auth.Account, proxyURL,
 	if baseURL == "" || bearer == "" {
 		return result, fmt.Errorf("Grok 账号缺少可用凭据")
 	}
+	ctx, finish := grokReadContext(ctx, account.ID(), "models")
+	defer func() { finish(result.StatusCode) }()
 	endpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/models")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

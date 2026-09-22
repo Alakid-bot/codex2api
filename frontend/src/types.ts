@@ -303,6 +303,9 @@ export interface AccountRow {
   /** Safe, allowlisted User-Agent observed/generated for Claude upstream calls. */
   claude_user_agent?: string
   grok_plan?: GrokPlanInfo
+  grok_plan_display?: { plan: string; source: string; status: "fresh" | "stale" | "unknown"; observed_at?: string; expires_at?: string }
+  /** Upstream directory, separate from the editable models whitelist. */
+  grok_models?: { models: string[]; status: "fresh" | "stale" | "unknown"; updated_at?: string }
   grok_billing?: GrokBillingDetail
   // 上游逐请求返回的配额余量(x-ratelimit-* 头),运行时快照
   grok_rate_limit?: GrokRateLimitSnapshot

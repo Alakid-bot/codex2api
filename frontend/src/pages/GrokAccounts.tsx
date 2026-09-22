@@ -37,6 +37,7 @@ import {
   Clock,
 } from "lucide-react";
 import { api, getAdminKey } from "../api";
+import { grokDisplayModels, grokModelSummaryTitle } from "../lib/grokModelDisplay";
 import type { ProxyRow } from "../api";
 import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
@@ -376,16 +377,17 @@ function GrokPlanBadge({
   compact = false,
   className,
 }: {
-  account: Pick<AccountRow, "plan_type" | "grok_plan">;
+  account: Pick<AccountRow, "plan_type" | "grok_plan" | "grok_plan_display">;
   compact?: boolean;
   className?: string;
 }) {
   const plan = resolveAccountGrokPlan(account);
   if (!plan) {
     return compact ? null : (
-      <span className="text-[12px] text-muted-foreground">—</span>
+      <span className="text-[12px] text-muted-foreground">未知</span>
     );
   }
+  const stale = account.grok_plan_display?.status !== undefined && account.grok_plan_display.status !== "fresh";
   const tone = plan.paid
     ? "bg-amber-500/10 text-amber-700 ring-amber-600/20 dark:bg-amber-500/20 dark:text-amber-300 dark:ring-amber-400/20"
     : plan.key === "free"
@@ -393,6 +395,7 @@ function GrokPlanBadge({
       : "bg-muted text-muted-foreground ring-border";
   return (
     <span
+      title={[account.grok_plan_display?.source, account.grok_plan_display?.observed_at].filter(Boolean).join(" · ")}
       className={cn(
         "inline-flex items-center whitespace-nowrap rounded-md ring-1 ring-inset",
         compact
@@ -402,7 +405,7 @@ function GrokPlanBadge({
         className,
       )}
     >
-      {plan.display}
+      {plan.display}{stale ? " · 过期" : ""}
     </span>
   );
 }
@@ -4067,7 +4070,7 @@ function GrokAccountCard({
   const { t } = useTranslation();
   const disabled = account.enabled === false;
   const isOAuth = account.grok_auth_kind === "oauth";
-  const models = account.models ?? [];
+  const models = grokDisplayModels(account);
   const host = shortHost(account.base_url);
   const label = accountLabel(account);
 
@@ -4215,6 +4218,7 @@ function GrokAccountCard({
             <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
               {t("grok.colModels")}
             </span>
+            <span className="text-[10px] text-muted-foreground" title={grokModelSummaryTitle(account)}>{account.models?.length ? "白名单" : "自动"}{account.grok_models?.status === "stale" ? " · 过期" : ""}{!account.grok_models || account.grok_models.status === "unknown" ? " · 未同步" : ""}</span>
             {models.length === 0 ? (
               <span className="text-[11px] text-muted-foreground/70">
                 {t("grok.noModels")}
@@ -4404,7 +4408,7 @@ function GrokAccountTableRow({
   const { t } = useTranslation();
   const disabled = account.enabled === false;
   const isOAuth = account.grok_auth_kind === "oauth";
-  const models = account.models ?? [];
+  const models = grokDisplayModels(account);
   const host = shortHost(account.base_url);
   const label = accountLabel(account);
   const tableOverlay = renderDisabledAccountOverlay(account, t, {
@@ -4552,7 +4556,8 @@ function GrokAccountTableRow({
         </TableCell>
       ) : null}
       {visibleColumns.models ? (
-        <TableCell>
+        <TableCell title={grokModelSummaryTitle(account)}>
+          <span className="text-[10px] text-muted-foreground">{account.models?.length ? "白名单" : "自动"}{account.grok_models?.status === "stale" ? " · 过期" : ""}{!account.grok_models || account.grok_models.status === "unknown" ? " · 未同步" : ""}</span>
           {models.length === 0 ? (
             <span className="text-[12px] text-muted-foreground/70">
               {t("grok.noModels")}
@@ -5480,17 +5485,17 @@ function GrokTestConnectionModal({
   }, []);
 
   useEffect(() => {
-    const accountModels = (account.models ?? []).filter(
+    const accountModels = grokDisplayModels(account).filter(
       (m) => m.trim() && !m.toLowerCase().includes("image"),
     );
     const next =
       accountModels.length > 0
         ? accountModels
-        : [...DEFAULT_GROK_TEST_MODELS];
+        : account.grok_models && account.grok_models.status !== "unknown" ? [] : [...DEFAULT_GROK_TEST_MODELS];
     setModelOptions(next);
     setSelectedModel(next[0] ?? "");
     setModelOptionsReady(true);
-  }, [account.models]);
+  }, [account.models, account.grok_models]);
 
   useEffect(() => {
     if (!modelOptionsReady || !selectedModel) return;
