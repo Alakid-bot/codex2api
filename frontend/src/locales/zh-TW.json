@@ -334,7 +334,7 @@
     "codexTurnStateSwitchLabel": "注入開關",
     "codexTurnStateFollowGlobal": "跟隨全域（預設）",
     "codexTurnStateOff": "關閉注入",
-    "codexTurnStateSwitchHint": "跟隨全域模板快取開關啟停自動與手動注入。關閉後保留模板和設定，智力偵測與測試連線仍會讀取各模型回傳的 Turn State。",
+    "codexTurnStateSwitchHint": "跟隨全域模板快取開關啟停自動注入。關閉後保留模板和設定，智力偵測與測試連線仍會讀取各模型回傳的 Turn State。",
     "turnStateStatus": {
       "injectionDisabled": "注入已關閉，偵測正常進行",
       "expires": "模板至 {{time}}",

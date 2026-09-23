@@ -362,9 +362,6 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	resetPromptRequestSecurityFrame(c)
 	resetPromptPolicyRequestCorrelationID(c)
 	resetUpstreamRequestTrace(c)
-	// Turn-state audit is request-scoped via HTTP middleware; multi-turn WS reuses
-	// the same gin.Context/request, so install a fresh slot per response.create.
-	attachFreshTurnStateTemplateAudit(c)
 	quotaParentRequest := c.Request
 	if err := h.refreshAPIKeyModelRequestQuotaTurn(c); err != nil {
 		return writeResponsesWSError(conn, apiKeyModelRequestError(err).apiErr)

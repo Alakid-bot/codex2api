@@ -300,31 +300,31 @@ func NormalizeUsageLogFlushIntervalSeconds(n int) int {
 // usageLogEntry 日志缓冲条目
 type usageLogEntry struct {
 	UserBilling
-	RequestID              string
-	UpstreamRequestID      string
-	UpstreamProxyID        int64
-	UpstreamProxyName      string
-	InjectedTurnState      string
-	UpstreamTurnState      string
-	StoreUsageLog          bool
-	AccountID              int64
-	CredentialGeneration   int64
-	Channel                string
-	ClientIP               string
-	ClientUserAgent        string
-	UpstreamUserAgent      string
-	UserAgentOverridden    bool
-	TurnStateOverridden    bool
-	TurnStateRewriteNote   string
-	InternalReason         string
-	ParentRequestID        string
-	Endpoint               string
-	Model                  string
-	EffectiveModel         string
+	RequestID            string
+	UpstreamRequestID    string
+	UpstreamProxyID      int64
+	UpstreamProxyName    string
+	InjectedTurnState    string
+	UpstreamTurnState    string
+	StoreUsageLog        bool
+	AccountID            int64
+	CredentialGeneration int64
+	Channel              string
+	ClientIP             string
+	ClientUserAgent      string
+	UpstreamUserAgent    string
+	UserAgentOverridden  bool
+	TurnStateOverridden  bool
+	TurnStateRewriteNote string
+	InternalReason       string
+	ParentRequestID      string
+	Endpoint             string
+	Model                string
+	EffectiveModel       string
 	// UpstreamResponseModel 是上游响应自报的模型名（观测值，未自报为空串）。
 	UpstreamResponseModel string
 	// UpstreamModelMismatch 三态：nil=上游未自报；true/false=自报与实发是否一致。
-	UpstreamModelMismatch *bool
+	UpstreamModelMismatch  *bool
 	PromptTokens           int
 	CompletionTokens       int
 	TotalTokens            int
@@ -461,9 +461,6 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 	if !fromSchemaTemplate {
 		if err := db.migrate(ctx); err != nil {
 			return nil, fmt.Errorf("数据库迁移失败: %w", err)
-		}
-		if err := db.ensureCodexTurnStateTemplateSchema(ctx); err != nil {
-			return nil, fmt.Errorf("初始化 Turn-State 模板表失败: %w", err)
 		}
 		if err := db.ensureQualityTestSchema(ctx); err != nil {
 			return nil, fmt.Errorf("初始化检测记录表失败: %w", err)
@@ -2406,8 +2403,6 @@ type SystemSettings struct {
 	CodexMinCLIVersion                 string
 	CodexUserAgentConfig               string
 	CodexTelemetryEnabled              bool
-	CodexTurnStateTemplateCacheEnabled bool   // X-Codex-Turn-State Fernet 模板缓存（实验性，默认 false）
-	CodexTurnStateAccountMode          string // personal|team|auto（默认 auto）
 	CodexTelemetryTimingDebug          bool
 	CodexImagesMainModel               string // 空值沿用部署默认的生图文本驱动模型
 	UsageLogMode                       string
@@ -2596,6 +2591,9 @@ func NormalizeSchedulerEngine(value string, legacyFastEnabled bool) string {
 // GetSystemSettings 加载全局设置
 func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	s := &SystemSettings{}
+	// 模板缓存列仍留在表里，读取后丢弃，避免改动既有 SELECT 列序。
+	var ignoredTurnStateTemplateCache bool
+	var ignoredTurnStateAccountMode string
 	err := db.conn.QueryRowContext(ctx, `
 		SELECT COALESCE(site_name, 'CodexProxy'), COALESCE(site_logo, ''),
 		       max_concurrency, global_rpm, test_model, COALESCE(test_content, 'hi'), test_concurrency, proxy_url, pg_max_conns, redis_pool_size,
@@ -2795,8 +2793,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.ClaudeConfig,
 		&s.CodexImagesMainModel,
 		&s.CodexTelemetryEnabled,
-		&s.CodexTurnStateTemplateCacheEnabled,
-		&s.CodexTurnStateAccountMode,
+		&ignoredTurnStateTemplateCache,
+		&ignoredTurnStateAccountMode,
 		&s.CodexOAuthKeepaliveEnabled,
 		&s.CodexTelemetryTimingDebug,
 	)
@@ -3229,8 +3227,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.AutoActivate5hWindowEnabled,
 		strings.TrimSpace(s.CodexImagesMainModel),
 		s.CodexTelemetryEnabled,
-		s.CodexTurnStateTemplateCacheEnabled,
-		s.CodexTurnStateAccountMode,
+		false,
+		"auto",
 		s.CodexOAuthKeepaliveEnabled,
 		s.CodexTelemetryTimingDebug,
 		s.PreservePromptFilterCustomPatterns,
@@ -4189,34 +4187,34 @@ func (db *DB) RebindAccountProxyURLs(ctx context.Context, oldURL, newURL string)
 // UsageLog 请求日志行
 type UsageLog struct {
 	UserBilling
-	RequestID              string    `json:"request_id"`
-	UpstreamRequestID      string    `json:"upstream_request_id"`
-	UpstreamProxyID        int64     `json:"upstream_proxy_id"`
-	UpstreamProxyName      string    `json:"upstream_proxy_name"`
-	InjectedTurnState      string    `json:"injected_turn_state,omitempty"`
-	UpstreamTurnState      string    `json:"upstream_turn_state,omitempty"`
-	ID                     int64     `json:"id"`
-	AccountID              int64     `json:"account_id"`
-	CredentialGeneration   int64     `json:"credential_generation,omitempty"`
-	Channel                string    `json:"channel,omitempty"`
-	ClientIP               string    `json:"client_ip"`
-	ClientUserAgent        string    `json:"client_user_agent"`
-	UpstreamUserAgent      string    `json:"upstream_user_agent"`
-	UserAgentOverridden    bool      `json:"user_agent_overridden"`
-	TurnStateOverridden    bool      `json:"turn_state_overridden"`
-	TurnStateRewriteNote   string    `json:"turn_state_rewrite_note"`
-	InternalReason         string    `json:"internal_reason"`
-	ParentRequestID        string    `json:"parent_request_id"`
-	Endpoint               string    `json:"endpoint"`
-	Model                  string    `json:"model"`
-	EffectiveModel         string    `json:"effective_model"`
+	RequestID            string `json:"request_id"`
+	UpstreamRequestID    string `json:"upstream_request_id"`
+	UpstreamProxyID      int64  `json:"upstream_proxy_id"`
+	UpstreamProxyName    string `json:"upstream_proxy_name"`
+	InjectedTurnState    string `json:"injected_turn_state,omitempty"`
+	UpstreamTurnState    string `json:"upstream_turn_state,omitempty"`
+	ID                   int64  `json:"id"`
+	AccountID            int64  `json:"account_id"`
+	CredentialGeneration int64  `json:"credential_generation,omitempty"`
+	Channel              string `json:"channel,omitempty"`
+	ClientIP             string `json:"client_ip"`
+	ClientUserAgent      string `json:"client_user_agent"`
+	UpstreamUserAgent    string `json:"upstream_user_agent"`
+	UserAgentOverridden  bool   `json:"user_agent_overridden"`
+	TurnStateOverridden  bool   `json:"turn_state_overridden"`
+	TurnStateRewriteNote string `json:"turn_state_rewrite_note"`
+	InternalReason       string `json:"internal_reason"`
+	ParentRequestID      string `json:"parent_request_id"`
+	Endpoint             string `json:"endpoint"`
+	Model                string `json:"model"`
+	EffectiveModel       string `json:"effective_model"`
 	// UpstreamResponseModel 是上游响应自报的模型名（取自 response.model 等字段，
 	// 未经协议转换或改写）。空串=上游未自报或历史行。
 	UpstreamResponseModel string `json:"upstream_response_model,omitempty"`
 	// UpstreamModelMismatch 三态：nil=上游未自报（或历史行），无法比对；
 	// true/false=已比对，上游自报与实发模型是否一致。
-	UpstreamModelMismatch *bool `json:"upstream_model_mismatch,omitempty"`
-	PromptTokens          int   `json:"prompt_tokens"`
+	UpstreamModelMismatch  *bool     `json:"upstream_model_mismatch,omitempty"`
+	PromptTokens           int       `json:"prompt_tokens"`
 	CompletionTokens       int       `json:"completion_tokens"`
 	TotalTokens            int       `json:"total_tokens"`
 	StatusCode             int       `json:"status_code"`
@@ -4288,10 +4286,10 @@ type UsageLog struct {
 // 整条批量 INSERT 回滚，失败的 batch 又会被原样放回缓冲区头部，下一轮继续失败——
 // 单条脏数据就能永久堵死整个日志写入。因此写入前按列宽截断。
 const (
-	usageLogChannelMaxLen    = 16  // channel
-	usageLogImageSizeMaxLen  = 32  // image_size
-	usageLogShortTextMaxLen  = 64  // client_ip / api_key_masked / upstream_error_kind
-	usageLogTextMaxLen       = 100 // endpoint / model / *_service_tier / reasoning_effort ...
+	usageLogChannelMaxLen   = 16  // channel
+	usageLogImageSizeMaxLen = 32  // image_size
+	usageLogShortTextMaxLen = 64  // client_ip / api_key_masked / upstream_error_kind
+	usageLogTextMaxLen      = 100 // endpoint / model / *_service_tier / reasoning_effort ...
 	// upstreamResponseModelMaxLen 与 usage_logs.upstream_response_model 列宽一致：
 	// 上游自报模型名不受网关控制，写入前按列宽截断。
 	upstreamResponseModelMaxLen = 200
@@ -4461,22 +4459,22 @@ type UsageLogInput struct {
 	// credential snapshot that issued it. Zero is legacy/unscoped traffic.
 	CredentialGeneration int64
 	// Channel 是处理该请求的上游渠道（codex/grok），写入时固化，空值表示未知。
-	Channel                string
-	ClientIP               string
-	ClientUserAgent        string
-	UpstreamUserAgent      string
-	UserAgentOverridden    bool
-	TurnStateOverridden    bool
-	TurnStateRewriteNote   string
-	InternalReason         string
-	ParentRequestID        string
-	Endpoint               string
-	Model                  string
-	EffectiveModel         string
+	Channel              string
+	ClientIP             string
+	ClientUserAgent      string
+	UpstreamUserAgent    string
+	UserAgentOverridden  bool
+	TurnStateOverridden  bool
+	TurnStateRewriteNote string
+	InternalReason       string
+	ParentRequestID      string
+	Endpoint             string
+	Model                string
+	EffectiveModel       string
 	// UpstreamResponseModel 是上游响应自报的模型名（观测值，未自报为空串）。
 	UpstreamResponseModel string
 	// UpstreamModelMismatch 三态：nil=上游未自报；true/false=自报与实发是否一致。
-	UpstreamModelMismatch *bool
+	UpstreamModelMismatch  *bool
 	PromptTokens           int
 	CompletionTokens       int
 	TotalTokens            int
