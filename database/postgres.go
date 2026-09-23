@@ -6245,6 +6245,11 @@ func usageLogDimensionWhere(f UsageLogFilter, nextIdx int) ([]string, []interfac
 	}
 	if f.Query != "" {
 		p := addArg("%" + f.Query + "%")
+		// 注意:这里只匹配账号 name,不匹配 accounts.credentials。
+		// credentials 是不透明 JSON(含模型目录、URL、token 等结构化数据),把它纳入
+		// LIKE 会让搜索词(如 "5.6")命中凭据里的模型目录,从而把该账号全部日志(含
+		// gpt-6-* 等不含搜索词的记录)带入结果;同时对用户输入的 LIKE 模式扫描凭据
+		// 内容本身也不安全。按账号名/邮箱仍可通过 name 命中。
 		parts = append(parts, fmt.Sprintf(`(
 			LOWER(COALESCE(u.error_message, '')) LIKE LOWER(%[1]s)
  OR LOWER(COALESCE(u.request_id, '')) LIKE LOWER(%[1]s)
@@ -6262,7 +6267,6 @@ func usageLogDimensionWhere(f UsageLogFilter, nextIdx int) ([]string, []interfac
 					SELECT search_accounts.id
 					FROM accounts search_accounts
 					WHERE LOWER(COALESCE(search_accounts.name, '')) LIKE LOWER(%[1]s)
-						OR LOWER(COALESCE(CAST(search_accounts.credentials AS TEXT), '')) LIKE LOWER(%[1]s)
 				)
 		)`, p))
 	}
