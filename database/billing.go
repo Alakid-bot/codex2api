@@ -282,6 +282,13 @@ func GetModelPricing(model string) *ModelPricing {
 		canonical = codexModel
 	}
 	base := baseModelPricing(normalized, canonical)
+	// 新型号沿用兜底基础价，但覆盖必须独立，不能继承另一个型号的手工价格。
+	if key := discoveredGPTPricingKey(normalized); key != "" {
+		canonical = key
+		if override, ok := lookupModelPricingOverride(key); ok && override.Input > 0 && override.Output > 0 {
+			base = &ModelPricing{}
+		}
+	}
 
 	// custom / synced 覆盖：以代码默认为底，合并非 0 字段（部分覆盖）。
 	// 覆盖表拷贝到本地副本再改，绝不改动共享的默认 pricing 指针。
