@@ -315,7 +315,7 @@ func stripGrokCLIIdentityHeaders(header http.Header) {
 	for _, key := range []string{
 		"x-grok-client-version", "x-grok-client-identifier", "x-grok-client-mode",
 		"x-xai-token-auth", "x-authenticateresponse", "x-compaction-at",
-		"x-grok-agent-id", "x-grok-session-id", "x-grok-conv-id", "x-grok-req-id",
+		"x-grok-agent-id", "x-grok-session-id", "x-grok-conv-id", "x-grok-conv-group-id", "x-grok-req-id",
 		"x-grok-turn-idx", "x-grok-model-override", "x-userid", "x-grok-user-id",
 		"x-grok-doom-loop-check", "x-compactions-remaining",
 	} {
