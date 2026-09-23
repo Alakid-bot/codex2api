@@ -4800,7 +4800,7 @@
       "officialSyncDone": "Official price sync complete: {{applied}} applied, {{skipped}} custom retained",
       "officialConfigSaved": "Official pricing poll settings saved",
       "autoOfficialSync": "Automatically update models and official prices",
-      "autoOfficialSyncHint": "Update prices on schedule. When OpenAI is selected, discover Codex models from the official catalog and account manifests first. Keep disabled models and custom prices. Off by default.",
+      "autoOfficialSyncHint": "Update prices and models at the configured interval.",
       "intervalMinutes": "Interval (minutes)",
       "intervalHour": "Every hour",
       "intervalSixHours": "Every 6 hours",

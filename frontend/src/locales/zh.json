@@ -4799,7 +4799,7 @@
       "officialSyncDone": "官方价格同步完成：写入 {{applied}}，保留自定义 {{skipped}}",
       "officialConfigSaved": "官方价格轮询设置已保存",
       "autoOfficialSync": "自动更新模型与官方价格",
-      "autoOfficialSyncHint": "按设定间隔更新价格；选择 OpenAI 时先从官方目录及账号清单发现 Codex 新模型。保留已禁用模型和自定义价格，默认关闭。",
+      "autoOfficialSyncHint": "按设定间隔更新价格和模型。",
       "intervalMinutes": "间隔（分钟）",
       "intervalHour": "每 1 小时",
       "intervalSixHours": "每 6 小时",
