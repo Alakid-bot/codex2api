@@ -549,6 +549,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	}
 	// 指纹收敛在 WS/HTTP 分叉前统一改写请求体，两条上游路径共享结果；请求头侧的
 	// 收敛（ApplyCodexFingerprintHeaders）从同一份「账号 + 下游头」推导，取值一致。
+	headers = PrepareCodexFingerprintHeaders(account, headers, requestBody)
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	// 账号绑定时区：改写 environment_context 的时区/日期，与指纹收敛一样在分叉前统一处理。
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
@@ -1076,6 +1077,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	// 真实标识，上游看到「头说设备 A、体说设备 B」这种真实客户端不会有的矛盾。
 	// 必须用 prepareCodexResponsesLiteTransport 之后的 headers（它可能返回克隆），
 	// 与下方 applyCodexRequestHeaders 取同一份下游头，两处推导结果才一致。
+	headers = PrepareCodexFingerprintHeaders(account, headers, requestBody)
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
 	// 凭据级 turn state 强制注入：compact 与普通轮共用同一条回合状态。

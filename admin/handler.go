@@ -2502,7 +2502,7 @@ func validateCodexFingerprintMode(value string) error {
 	if value == "" || auth.IsValidCodexFingerprintMode(value) {
 		return nil
 	}
-	return errors.New("必须是 off、device、session 或 full")
+	return errors.New("必须是 off、device、session、single_machine_multi_window 或 full")
 }
 
 // refineCodexTurnStateSetAt 让时效起点只在注入值真正换掉时重置：原样重提同一个值不
