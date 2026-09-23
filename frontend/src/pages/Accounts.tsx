@@ -12965,6 +12965,7 @@ function formatPlanLabel(planType?: string): string {
   const lower = raw.toLowerCase();
   if (lower === "prolite" || lower === "pro_lite" || lower === "pro-lite")
     return "ProLite";
+  if (lower === "self_serve_business_prolite") return "team5x";
   return raw;
 }
 
@@ -13007,7 +13008,11 @@ function PlanBadge({
 
   const normalized = normalizePlanType(planType);
   const key =
-    normalized === "pro" && label === "ProLite" ? "prolite" : normalized;
+    normalized === "pro" && label === "ProLite"
+      ? "prolite"
+      : label === "team5x"
+        ? "team"
+        : normalized;
   const cls =
     style[key] ||
     "bg-slate-100 text-slate-600 ring-slate-400/20 dark:bg-slate-500/15 dark:text-slate-300 dark:ring-slate-400/20";
